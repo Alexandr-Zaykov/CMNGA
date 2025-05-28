@@ -7,8 +7,8 @@ program CumulativeMultiNichingGA
     
     ! Parameters
     ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
-    integer, parameter :: pop_size = 20     ! Population size
-    integer, parameter :: max_gen = 200          ! Maximum generations
+    integer, parameter :: pop_size = 200  ! Population size
+    integer, parameter :: max_gen = 60          ! Maximum generations
     integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
     integer, parameter :: num_niches = 15        ! Number of niches to maintain
     real, parameter :: mutate_rate = 0.30         ! Mutation rate
@@ -89,7 +89,7 @@ program CumulativeMultiNichingGA
             do i = 1, num_niches
                 if (niche_fitness(i) > -999.0) then
                     print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                           " Fitness = ", niche_fitness(i), " Cov_valid = ", cov_valid(i)
+                           " Fitness = ", niche_fitness(i), " Mahalonobis: ", cov_valid(i)
                 end if
             end do
             print *
@@ -102,7 +102,7 @@ program CumulativeMultiNichingGA
     do i = 1, num_niches
         if (niche_fitness(i) > -999.0) then
             print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                   " Value = ", niche_fitness(i) - 1.0, " Cov_valid = ", cov_valid(i)
+                   " Value = ", niche_fitness(i) - 1.0, " Mahalonobis: ", cov_valid(i)
         end if
     end do
     call CPU_TIME(time_end)
@@ -163,17 +163,16 @@ contains
         integer, intent(in) :: dims
         real, dimension(dims), intent(in) :: point1, point2
         real, dimension(dims, dims), intent(in) :: inv_cov
-        real :: dist
+        integer :: i,j
+        real :: dist, dot_product_result
         real, dimension(dims) :: diff
         real, dimension(dims) :: temp
         
         diff = point1 - point2
-        
         ! temp = inv_cov * diff (using BLAS SGEMV for efficiency)
         call sgemv('N', dims, dims, 1.0, inv_cov, dims, diff, 1, 0.0, temp, 1)
-        
-        ! dist = sqrt(diff^T * temp) (using BLAS SDOT)
-        dist = sqrt(max(0.0, sdot(dims, diff, 1, temp, 1)))
+        ! dist = sqrt(diff^T * temp) (using intrinsic – I failed to use sdot)
+        dist = sqrt(max(0.0, dot_product(diff,temp)))
     end function mahalanobis_distance
     
     ! Update covariance matrices for each niche using LAPACK
@@ -241,43 +240,14 @@ contains
                 
                 ! Calculate inverse using LAPACK
                 work_mat = cov_mat  ! Copy since LAPACK destroys input
-                
-                ! LU factorization
                 call sgetrf(dims, dims, work_mat, dims, ipiv, info)
-                
                 if (info == 0) then
-                    ! Check condition number to avoid nearly singular matrices
-                    call sgecon('1', dims, work_mat, dims, 1.0, rcond, work, iwork, info)
-                    
-                    if (info == 0 .and. rcond > 1e-12) then
-                        ! Matrix is well-conditioned, compute inverse
-                        call sgetri(dims, work_mat, dims, ipiv, work, dims, info)
-                        
-                        if (info == 0) then
-                            inv_cov_matrices(niche_id, :, :) = work_mat
-                            cov_valid(niche_id) = .true.
-                        end if
-                    end if
-                end if
-                
-                ! If LAPACK inversion failed, try Cholesky decomposition for SPD matrices
-                if (.not. cov_valid(niche_id)) then
-                    work_mat = cov_mat
-                    call spotrf('U', dims, work_mat, dims, info)
-                    if (info == 0) then
-                        call spotri('U', dims, work_mat, dims, info)
-                        if (info == 0) then
-                            ! Copy upper triangle to lower triangle
-                            do j = 1, dims
-                                do k = j+1, dims
-                                    work_mat(k, j) = work_mat(j, k)
-                                end do
-                            end do
-                            inv_cov_matrices(niche_id, :, :) = work_mat
-                            cov_valid(niche_id) = .true.
-                        end if
-                    end if
-                end if
+                  call sgetri(dims, work_mat, dims, ipiv, work, dims, info)
+                  if (info == 0) then
+                    inv_cov_matrices(niche_id, :, :) = work_mat
+                    cov_valid(niche_id) = .true.
+                  end if
+                end if 
             end if
         end do
     end subroutine update_niche_covariances
@@ -362,7 +332,7 @@ contains
         integer :: i, j, k, closest_niche
         real :: dist, min_dist
         real :: chi_threshold
-        real,parameter :: chi_table_0001(37)=(/10.828, 13.816, 16.266, 18.467, 20.515, &
+        real,parameter :: chi_table_01(37)=(/10.828, 13.816, 16.266, 18.467, 20.515, &
                                      & 22.458, 24.322, 26.124, 27.877, 29.588, &
                                      & 31.264, 32.909, 34.528, 36.123, 37.697, &
                                      & 39.252, 40.790, 42.312, 43.820, 45.315, &
@@ -370,19 +340,19 @@ contains
                                      & 54.052, 55.476, 56.892, 58.302, 59.703, &
                                      & 73.402, 86.661, 99.607,112.317,124.839, &
                                      & 137.208,149.449/) ! At 0.1% significance
-        real,parameter :: chi_table_001(37)=(/ 6.635,  9.210, 11.345, 13.277, 15.086, &
+        real,parameter :: chi_table_1(37)=(/ 6.635,  9.210, 11.345, 13.277, 15.086, &
                                      &16.812, 18.475, 20.090, 21.666, 23.209, &
                                      &24.725, 26.217, 27.688, 29.141, 30.578, &
                                      &32.000, 33.409, 34.805, 36.191, 37.566, &
                                      &38.932, 40.289, 41.638, 42.980, 44.314, &
                                      &45.642, 46.963, 48.278, 49.588, 50.892, &
                                      &63.691, 76.154, 88.379,100.425,112.329, &
-                                     &124.116,135.807/)
-        real,parameter :: chi_table(37)=(/ 3.841, 5.991, 7.815, 9.488,11.070,12.592,14.067,15.507,16.919,18.307,&
+                                     &124.116,135.807/) ! At 1% significance
+        real,parameter :: chi_table_5(37)=(/ 3.841, 5.991, 7.815, 9.488,11.070,12.592,14.067,15.507,16.919,18.307,&
                                          &19.675,21.026,22.362,23.685,24.996,26.296,27.587,28.869,30.144,31.410,&
                                          &32.671,33.924,35.172,36.415,37.652,38.885,40.113,41.337,42.557,43.773,&
                                          &55.758,67.505,79.082,90.531,101.879,113.145,124.342/) ! At 5% significance
-        real,parameter :: chi_table_01(37)=(/ 2.706, 4.605, 6.251, 7.779, 9.236,10.645,12.017,13.362,14.684,15.987,&
+        real,parameter :: chi_table_10(37)=(/ 2.706, 4.605, 6.251, 7.779, 9.236,10.645,12.017,13.362,14.684,15.987,&
                                             &17.275,18.549,19.812,21.064,22.307,23.542,24.769,25.989,27.204,28.412,&
                                             &29.615,30.813,32.007,33.196,34.382,35.563,36.741,37.916,39.087,40.256,&
                                             &51.805,63.167,74.397,85.527, 96.578,107.565,118.498/) ! At 10% significance
@@ -411,6 +381,14 @@ contains
                                     &17.292,18.114,18.939,19.768,20.599, &
                                     &29.588,39.364,49.475,59.770,70.195, &
                                     &80.725,91.342/) ! At 90% significance
+        real,parameter :: chi_table_95(37)=(/ 0.004, 0.103, 0.352, 0.711, 1.145, &
+                                    & 1.635, 2.167, 2.733, 3.325, 3.940, &
+                                    & 4.575, 5.226, 5.892, 6.571, 7.261, &
+                                    & 7.962, 8.672, 9.390,10.117,10.851, &
+                                    &11.591,12.338,13.091,13.848,14.611, &
+                                    &15.379,16.151,16.928,17.708,18.493, &
+                                    &26.509,35.249,44.314,53.540,62.830, &
+                                    &72.153,81.500/)
         
         do i = 1, size
             membership(i) = 0  ! Default - no niche
@@ -445,23 +423,23 @@ contains
                     ! Higher than 30D is very likely completely useless, but the code snippet may help someone
                     SELECT CASE(dims)
                       CASE(1:30)
-                        chi_threshold = chi_table_0001(dims)
+                        chi_threshold = chi_table_5(dims)
                       CASE(31:39)
-                        chi_threshold = chi_table(30)
+                        chi_threshold = chi_table_10(30)
                       CASE(40:49)
-                        chi_threshold = chi_table(31)
+                        chi_threshold = chi_table_10(31)
                       CASE(50:59)
-                        chi_threshold = chi_table(32)
+                        chi_threshold = chi_table_10(32)
                       CASE(60:69)
-                        chi_threshold = chi_table(33)
+                        chi_threshold = chi_table_10(33)
                       CASE(70:79)
-                        chi_threshold = chi_table(34)
+                        chi_threshold = chi_table_10(34)
                       CASE(80:99)
-                        chi_threshold = chi_table(35)
+                        chi_threshold = chi_table_10(35)
                       CASE(100:999)
-                        chi_threshold = chi_table(36)
+                        chi_threshold = chi_table_10(36)
                       CASE DEFAULT
-                        chi_threshold = chi_table(37)  ! Use last value for very high dims
+                        chi_threshold = chi_table_10(37)  ! Use last value for very high dims
                     END SELECT
                     
                     ! Chi-square threshold for Mahalanobis distance
@@ -470,6 +448,7 @@ contains
                     ! However, this provides VERY broad niches... unless sampled enough...
                     ! We will likely deal with rather poor sampling and might need to use broader definition of an outlier.
                     ! = large p-value
+
                     if (min_dist**2 <= chi_threshold) then  ! Square for comparison
                         membership(i) = closest_niche 
                     end if
