@@ -6,10 +6,11 @@ program CumulativeMultiNichingGA
     real :: sdot
     
     ! Parameters
-    integer, parameter :: pop_size = 200      ! Population size
+    ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
+    integer, parameter :: pop_size = 40       ! Population size
     integer, parameter :: max_gen = 200          ! Maximum generations
     integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
-    integer, parameter :: num_niches = 30        ! Number of niches to maintain
+    integer, parameter :: num_niches = 15        ! Number of niches to maintain
     real, parameter :: mutate_rate = 0.30         ! Mutation rate
     real, parameter :: cross_rate = 0.05           ! Crossover rate
     real, parameter :: radius_factor = 0.05       ! Niche radius factor
@@ -390,6 +391,7 @@ contains
                 if (cov_valid(closest_niche)) then
                     ! For Mahalanobis distance, use chi-square threshold
                     ! For dims degrees of freedom, 95% confidence interval
+                    ! This needs checking
                     if (dims <= 1) then
                         chi_threshold = 3.84  ! chi2(0.95, 1)
                     else if (dims <= 2) then
@@ -572,6 +574,8 @@ contains
     
     ! Crossover operator (SBX - Simulated Binary Crossover)
     ! Agrawal, Ram & Deb, Kalyanmoy & Agrawal, Ram. (2000). Simulated Binary Crossover for Continuous Search Space. Complex Systems. 9. 
+    ! Similar implementation to that of pymoo from MSU Coinlab: https://github.com/msu-coinlab/pymoo/pymoo/operators/crosssover/sbx
+    ! DOI: 10.1109/ACCESS.2020.2990567 !
     subroutine crossover(parent1, parent2, child1, child2, dims, lower, upper)
         real, dimension(dims), intent(in) :: parent1, parent2
         real, intent(in) :: lower, upper
@@ -579,7 +583,7 @@ contains
         integer, intent(in) :: dims
         real :: beta, u
         integer :: i
-        real, parameter :: eta_c = 1.0  ! Distribution index
+        real, parameter :: eta_c = 20.0  ! Distribution index
         
         do i = 1, dims
             call random_number(u)
