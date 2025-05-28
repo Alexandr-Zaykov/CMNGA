@@ -347,6 +347,9 @@ contains
     end subroutine update_niches
     
     ! Assign each individual to a niche using Mahalanobis distance where available
+    ! Mahalonobis distance: doi.org/10.1007/s13171-019-00164-5
+    ! Outlier analysis: 10.1007/978-3-319-47578-3
+    ! Perfect explanation: https://www.cfholbert.com/blog/outlier_mahalanobis_distance/
     subroutine assign_niches_mahalanobis(pop, centers, inv_cov, cov_valid, membership, &
                                         size, num_nich, dims, radius)
         real, dimension(size, dims), intent(in) :: pop
@@ -462,9 +465,11 @@ contains
                     END SELECT
                     
                     ! Chi-square threshold for Mahalanobis distance
-                    ! It provides a multivariate test whether a point is an outlier
+                    ! It provides a multivariate test whether a point is an outlier = hypothesis
                     ! If we are following statistics, 95% threshold should be used
                     ! However, this provides VERY broad niches... unless sampled enough...
+                    ! We will likely deal with rather poor sampling and might need to use broader definition of an outlier.
+                    ! = large p-value
                     if (min_dist**2 <= chi_threshold) then  ! Square for comparison
                         membership(i) = closest_niche 
                     end if
