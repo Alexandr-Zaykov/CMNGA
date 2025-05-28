@@ -7,7 +7,7 @@ program CumulativeMultiNichingGA
     
     ! Parameters
     ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
-    integer, parameter :: pop_size = 40       ! Population size
+    integer, parameter :: pop_size = 20     ! Population size
     integer, parameter :: max_gen = 200          ! Maximum generations
     integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
     integer, parameter :: num_niches = 15        ! Number of niches to maintain
@@ -359,6 +359,22 @@ contains
         integer :: i, j, k, closest_niche
         real :: dist, min_dist
         real :: chi_threshold
+        real,parameter :: chi_table_0001(37)=(/10.828, 13.816, 16.266, 18.467, 20.515, &
+                                     & 22.458, 24.322, 26.124, 27.877, 29.588, &
+                                     & 31.264, 32.909, 34.528, 36.123, 37.697, &
+                                     & 39.252, 40.790, 42.312, 43.820, 45.315, &
+                                     & 46.797, 48.268, 49.728, 51.179, 52.620, &
+                                     & 54.052, 55.476, 56.892, 58.302, 59.703, &
+                                     & 73.402, 86.661, 99.607,112.317,124.839, &
+                                     & 137.208,149.449/) ! At 0.1% significance
+        real,parameter :: chi_table_001(37)=(/ 6.635,  9.210, 11.345, 13.277, 15.086, &
+                                     &16.812, 18.475, 20.090, 21.666, 23.209, &
+                                     &24.725, 26.217, 27.688, 29.141, 30.578, &
+                                     &32.000, 33.409, 34.805, 36.191, 37.566, &
+                                     &38.932, 40.289, 41.638, 42.980, 44.314, &
+                                     &45.642, 46.963, 48.278, 49.588, 50.892, &
+                                     &63.691, 76.154, 88.379,100.425,112.329, &
+                                     &124.116,135.807/)
         real,parameter :: chi_table(37)=(/ 3.841, 5.991, 7.815, 9.488,11.070,12.592,14.067,15.507,16.919,18.307,&
                                          &19.675,21.026,22.362,23.685,24.996,26.296,27.587,28.869,30.144,31.410,&
                                          &32.671,33.924,35.172,36.415,37.652,38.885,40.113,41.337,42.557,43.773,&
@@ -367,6 +383,31 @@ contains
                                             &17.275,18.549,19.812,21.064,22.307,23.542,24.769,25.989,27.204,28.412,&
                                             &29.615,30.813,32.007,33.196,34.382,35.563,36.741,37.916,39.087,40.256,&
                                             &51.805,63.167,74.397,85.527, 96.578,107.565,118.498/) ! At 10% significance
+        ! Bad idea how to provide tighter niches:
+        real,parameter :: chi_table_50(37)=(/ 0.455, 1.386, 2.366, 3.357, 4.351, &
+                                    & 5.348, 6.346, 7.344, 8.343, 9.342, &
+                                    &10.341,11.340,12.340,13.339,14.339, &
+                                    &15.338,16.338,17.338,18.338,19.337, &
+                                    &20.337,21.337,22.337,23.337,24.336, &
+                                    &25.336,26.336,27.336,28.336,29.336, &
+                                    &39.335,49.335,59.335,69.334,79.334, &
+                                    &89.334,99.334/) ! At 50% significance
+        real,parameter :: chi_table_70(37)=(/ 0.148, 0.713, 1.424, 2.195, 2.999, &
+                                    & 3.828, 4.671, 5.527, 6.393, 7.267, &
+                                    & 8.148, 9.034, 9.926,10.821,11.721, &
+                                    &12.624,13.531,14.440,15.352,16.266, &
+                                    &17.182,18.101,19.021,19.943,20.867, &
+                                    &21.792,22.719,23.647,24.577,25.508, &
+                                    &35.534,45.616,55.758,65.950,76.188, &
+                                    &86.464,96.774/) ! At 70% significance
+        real,parameter :: chi_table_90(37)=(/ 0.016, 0.211, 0.584, 1.064, 1.610, &
+                                    & 2.204, 2.833, 3.490, 4.168, 4.865, &
+                                    & 5.578, 6.304, 7.042, 7.790, 8.547, &
+                                    & 9.312,10.085,10.865,11.651,12.443, &
+                                    &13.240,14.041,14.848,15.659,16.473, &
+                                    &17.292,18.114,18.939,19.768,20.599, &
+                                    &29.588,39.364,49.475,59.770,70.195, &
+                                    &80.725,91.342/) ! At 90% significance
         
         do i = 1, size
             membership(i) = 0  ! Default - no niche
@@ -398,11 +439,10 @@ contains
             if (closest_niche > 0) then
                 if (cov_valid(closest_niche)) then
                     ! For Mahalanobis distance, use chi-square threshold
-                    ! For dims degrees of freedom, 95% confidence interval (5% significance)
                     ! Higher than 30D is very likely completely useless, but the code snippet may help someone
                     SELECT CASE(dims)
                       CASE(1:30)
-                        chi_threshold = chi_table(dims)
+                        chi_threshold = chi_table_0001(dims)
                       CASE(31:39)
                         chi_threshold = chi_table(30)
                       CASE(40:49)
@@ -421,8 +461,12 @@ contains
                         chi_threshold = chi_table(37)  ! Use last value for very high dims
                     END SELECT
                     
+                    ! Chi-square threshold for Mahalanobis distance
+                    ! It provides a multivariate test whether a point is an outlier
+                    ! If we are following statistics, 95% threshold should be used
+                    ! However, this provides VERY broad niches... unless sampled enough...
                     if (min_dist**2 <= chi_threshold) then  ! Square for comparison
-                        membership(i) = closest_niche
+                        membership(i) = closest_niche 
                     end if
                 else
                     ! Use original Euclidean threshold
