@@ -359,6 +359,10 @@ contains
         integer :: i, j, k, closest_niche
         real :: dist, min_dist
         real :: chi_threshold
+        real,parameter :: chi_table(37)=(/ 3.841, 5.991, 7.815, 9.488,11.070,12.592,14.067,15.507,16.919,18.307,&
+                                         &19.675,21.026,22.362,23.685,24.996,26.296,27.587,28.869,30.144,31.410,&
+                                         &32.671,33.924,35.172,36.415,37.652,38.885,40.113,41.337,42.557,43.773,&
+                                         &55.758,67.505,79.082,90.531,101.879,113.145,124.342/) ! At 5% significance
         
         do i = 1, size
             membership(i) = 0  ! Default - no niche
@@ -390,27 +394,28 @@ contains
             if (closest_niche > 0) then
                 if (cov_valid(closest_niche)) then
                     ! For Mahalanobis distance, use chi-square threshold
-                    ! For dims degrees of freedom, 95% confidence interval
-                    ! This needs checking
-                    if (dims <= 1) then
-                        chi_threshold = 3.84  ! chi2(0.95, 1)
-                    else if (dims <= 2) then
-                        chi_threshold = 5.99  ! chi2(0.95, 2)
-                    else if (dims <= 3) then
-                        chi_threshold = 7.81  ! chi2(0.95, 3)
-                    else if (dims <= 4) then
-                        chi_threshold = 9.49  ! chi2(0.95, 4)
-                    else if (dims <= 5) then
-                        chi_threshold = 11.07 ! chi2(0.95, 5)
-                    else if (dims <= 6) then
-                        chi_threshold = 12.59 ! chi2(0.95, 6)
-                    else if (dims <= 8) then
-                        chi_threshold = 15.51 ! chi2(0.95, 8)
-                    else if (dims <= 10) then
-                        chi_threshold = 18.31 ! chi2(0.95, 10)
-                    else
-                        chi_threshold = 21.03 ! chi2(0.95, 12)
-                    end if
+                    ! For dims degrees of freedom, 95% confidence interval (5% significance)
+                    ! Higher than 30D is very likely completely useless, but the code snippet may help someone
+                    SELECT CASE(dims)
+                      CASE(1:30)
+                        chi_threshold = chi_table(dims)
+                      CASE(31:39)
+                        chi_threshold = chi_table(30)
+                      CASE(40:49)
+                        chi_threshold = chi_table(31)
+                      CASE(50:59)
+                        chi_threshold = chi_table(32)
+                      CASE(60:69)
+                        chi_threshold = chi_table(33)
+                      CASE(70:79)
+                        chi_threshold = chi_table(34)
+                      CASE(80:99)
+                        chi_threshold = chi_table(35)
+                      CASE(100:999)
+                        chi_threshold = chi_table(36)
+                      CASE DEFAULT
+                        chi_threshold = chi_table(37)  ! Use last value for very high dims
+                    END SELECT
                     
                     if (min_dist**2 <= chi_threshold) then  ! Square for comparison
                         membership(i) = closest_niche
