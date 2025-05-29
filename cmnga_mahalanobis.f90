@@ -11,12 +11,12 @@ program CumulativeMultiNichingGA
     integer, parameter :: max_gen = 60          ! Maximum generations
     integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
     integer, parameter :: num_niches = 15        ! Number of niches to maintain
+    integer, parameter :: min_niche_size = 3         ! Minimum individuals per niche for covariance
     real, parameter :: mutate_rate = 0.30         ! Mutation rate
     real, parameter :: cross_rate = 0.05           ! Crossover rate
     real, parameter :: radius_factor = 0.05       ! Niche radius factor
     real, parameter :: min_bound = -4.0           ! Lower bound for variables
     real, parameter :: max_bound = 4.0            ! Upper bound for variables
-    real, parameter :: min_niche_size = 3         ! Minimum individuals per niche for covariance
     real, parameter :: reg_param = 1e-6           ! Regularization parameter for covariance
     
     ! Variables
@@ -213,7 +213,7 @@ contains
             end do
             
             ! Need at least min_niche_size individuals for reliable covariance
-            if (count >= int(min_niche_size)) then
+            if (count >= min_niche_size) then
                 ! Calculate mean
                 mean_vec = 0.0
                 do i = 1, count
@@ -240,14 +240,42 @@ contains
                 
                 ! Calculate inverse using LAPACK
                 work_mat = cov_mat  ! Copy since LAPACK destroys input
+                ! LU factorization
                 call sgetrf(dims, dims, work_mat, dims, ipiv, info)
+                
                 if (info == 0) then
-                  call sgetri(dims, work_mat, dims, ipiv, work, dims, info)
-                  if (info == 0) then
-                    inv_cov_matrices(niche_id, :, :) = work_mat
-                    cov_valid(niche_id) = .true.
-                  end if
-                end if 
+                    ! Check condition number to avoid nearly singular matrices
+                    call sgecon('1', dims, work_mat, dims, 1.0, rcond, work, iwork, info)
+                    
+                    if (info == 0 .and. rcond > 1e-12) then
+                        ! Matrix is well-conditioned, compute inverse
+                        call sgetri(dims, work_mat, dims, ipiv, work, dims, info)
+                        
+                        if (info == 0) then
+                            inv_cov_matrices(niche_id, :, :) = work_mat
+                            cov_valid(niche_id) = .true.
+                        end if
+                    end if
+                end if
+                
+                ! If LAPACK inversion failed, try Cholesky decomposition for SPD matrices
+                if (.not. cov_valid(niche_id)) then
+                    work_mat = cov_mat
+                    call spotrf('U', dims, work_mat, dims, info)
+                    if (info == 0) then
+                        call spotri('U', dims, work_mat, dims, info)
+                        if (info == 0) then
+                            ! Copy upper triangle to lower triangle
+                            do j = 1, dims
+                                do k = j+1, dims
+                                    work_mat(k, j) = work_mat(j, k)
+                                end do
+                            end do
+                            inv_cov_matrices(niche_id, :, :) = work_mat
+                            cov_valid(niche_id) = .true.
+                        end if
+                    end if
+                end if
             end if
         end do
     end subroutine update_niche_covariances
@@ -448,6 +476,7 @@ contains
                     ! However, this provides VERY broad niches... unless sampled enough...
                     ! We will likely deal with rather poor sampling and might need to use broader definition of an outlier.
                     ! = large p-value
+                    ! NOTE: This still behaves a little counter-intuitively...
 
                     if (min_dist**2 <= chi_threshold) then  ! Square for comparison
                         membership(i) = closest_niche 
