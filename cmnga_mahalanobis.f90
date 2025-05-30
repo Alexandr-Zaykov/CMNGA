@@ -3,12 +3,80 @@ program CumulativeMultiNichingGA
     
     ! External BLAS/LAPACK functions
     external :: sgemv, sger, sgetrf, sgetri, sgecon, spotrf, spotri
+    ! chi_square tables
+    ! For Mahalanobis distance, use chi-square threshold
+    ! Higher than 30D is very likely completely useless, but the code snippet may help someone
+    ! Chi-square threshold for Mahalanobis distance
+    ! It provides a multivariate test whether a point is an outlier = hypothesis
+    ! If we are following statistics, 95% threshold should be used
+    ! However, this provides VERY broad niches... unless sampled enough...
+    ! We will likely deal with rather poor sampling and might need to use broader definition of an outlier.
+    ! = large p-value
+    ! NOTE: This still behaves a little counter-intuitively...
+    !       It may also not be the best idea and we might want to go with some empirical constant.
+    real,parameter :: chi_table_01(37)=(/10.828, 13.816, 16.266, 18.467, 20.515, &
+                                 & 22.458, 24.322, 26.124, 27.877, 29.588, &
+                                 & 31.264, 32.909, 34.528, 36.123, 37.697, &
+                                 & 39.252, 40.790, 42.312, 43.820, 45.315, &
+                                 & 46.797, 48.268, 49.728, 51.179, 52.620, &
+                                 & 54.052, 55.476, 56.892, 58.302, 59.703, &
+                                 & 73.402, 86.661, 99.607,112.317,124.839, &
+                                 & 137.208,149.449/) ! At 0.1% significance
+    real,parameter :: chi_table_1(37)=(/ 6.635,  9.210, 11.345, 13.277, 15.086, &
+                                 &16.812, 18.475, 20.090, 21.666, 23.209, &
+                                 &24.725, 26.217, 27.688, 29.141, 30.578, &
+                                 &32.000, 33.409, 34.805, 36.191, 37.566, &
+                                 &38.932, 40.289, 41.638, 42.980, 44.314, &
+                                 &45.642, 46.963, 48.278, 49.588, 50.892, &
+                                 &63.691, 76.154, 88.379,100.425,112.329, &
+                                 &124.116,135.807/) ! At 1% significance
+    real,parameter :: chi_table_5(37)=(/ 3.841, 5.991, 7.815, 9.488,11.070,12.592,14.067,15.507,16.919,18.307,&
+                                     &19.675,21.026,22.362,23.685,24.996,26.296,27.587,28.869,30.144,31.410,&
+                                     &32.671,33.924,35.172,36.415,37.652,38.885,40.113,41.337,42.557,43.773,&
+                                     &55.758,67.505,79.082,90.531,101.879,113.145,124.342/) ! At 5% significance
+    real,parameter :: chi_table_10(37)=(/ 2.706, 4.605, 6.251, 7.779, 9.236,10.645,12.017,13.362,14.684,15.987,&
+                                        &17.275,18.549,19.812,21.064,22.307,23.542,24.769,25.989,27.204,28.412,&
+                                        &29.615,30.813,32.007,33.196,34.382,35.563,36.741,37.916,39.087,40.256,&
+                                        &51.805,63.167,74.397,85.527, 96.578,107.565,118.498/) ! At 10% significance
+    ! Bad idea how to provide tighter niches:
+    real,parameter :: chi_table_50(37)=(/ 0.455, 1.386, 2.366, 3.357, 4.351, &
+                                & 5.348, 6.346, 7.344, 8.343, 9.342, &
+                                &10.341,11.340,12.340,13.339,14.339, &
+                                &15.338,16.338,17.338,18.338,19.337, &
+                                &20.337,21.337,22.337,23.337,24.336, &
+                                &25.336,26.336,27.336,28.336,29.336, &
+                                &39.335,49.335,59.335,69.334,79.334, &
+                                &89.334,99.334/) ! At 50% significance
+    real,parameter :: chi_table_70(37)=(/ 0.148, 0.713, 1.424, 2.195, 2.999, &
+                                & 3.828, 4.671, 5.527, 6.393, 7.267, &
+                                & 8.148, 9.034, 9.926,10.821,11.721, &
+                                &12.624,13.531,14.440,15.352,16.266, &
+                                &17.182,18.101,19.021,19.943,20.867, &
+                                &21.792,22.719,23.647,24.577,25.508, &
+                                &35.534,45.616,55.758,65.950,76.188, &
+                                &86.464,96.774/) ! At 70% significance
+    real,parameter :: chi_table_90(37)=(/ 0.016, 0.211, 0.584, 1.064, 1.610, &
+                                & 2.204, 2.833, 3.490, 4.168, 4.865, &
+                                & 5.578, 6.304, 7.042, 7.790, 8.547, &
+                                & 9.312,10.085,10.865,11.651,12.443, &
+                                &13.240,14.041,14.848,15.659,16.473, &
+                                &17.292,18.114,18.939,19.768,20.599, &
+                                &29.588,39.364,49.475,59.770,70.195, &
+                                &80.725,91.342/) ! At 90% significance
+    real,parameter :: chi_table_95(37)=(/ 0.004, 0.103, 0.352, 0.711, 1.145, &
+                                & 1.635, 2.167, 2.733, 3.325, 3.940, &
+                                & 4.575, 5.226, 5.892, 6.571, 7.261, &
+                                & 7.962, 8.672, 9.390,10.117,10.851, &
+                                &11.591,12.338,13.091,13.848,14.611, &
+                                &15.379,16.151,16.928,17.708,18.493, &
+                                &26.509,35.249,44.314,53.540,62.830, &
+                                &72.153,81.500/)
     
     ! Parameters
     ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
-    integer, parameter :: pop_size = 100 ! Population size
-    integer, parameter :: max_gen = 500       ! Maximum generations
-    integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
+    integer, parameter :: pop_size = 50 ! Population size
+    integer, parameter :: max_gen = 400      ! Maximum generations
+    integer, parameter :: num_vars = 1           ! Number of variables in optimization (up to 30D)
     integer, parameter :: num_niches = 20        ! Number of niches to maintain
     integer, parameter :: min_niche_size = 3         ! Minimum current individuals per niche for covariance
     real, parameter :: mutate_rate = 0.15         ! Mutation rate
@@ -68,10 +136,16 @@ program CumulativeMultiNichingGA
         ! Update niche centers
         call update_niches(population, fitness, niche_centers, niche_fitness, &
                           &num_niches, pop_size, num_vars, niche_radius)
+
+      ! This just does not work at all.
+      ! call update_niches_mahalanobis(population, fitness, niche_centers, niche_fitness, &
+      !                               &num_niches, pop_size, num_vars, niche_radius,cov_valid,&
+      !                                &niche_inv_cov,chi_table_01(num_vars))
         
         ! Assign individuals to niches
+        ! Legacy code. Curiously, it adds some niches. But that may be a random artifact.
         call assign_niches(population, niche_centers, niche_membership, &
-                          &pop_size, num_niches, num_vars, niche_radius)
+                           &pop_size, num_niches, num_vars, niche_radius)
         
         call update_adaptive_alpha(niche_centers, prev_niche_centers, niche_stability_count, &
                                   &niche_alpha, gen, num_niches, num_vars, niche_stability_threshold,&
@@ -85,7 +159,8 @@ program CumulativeMultiNichingGA
         ! Re-assign individuals using Mahalanobis distance where possible
         call assign_niches_mahalanobis(population, niche_centers, niche_inv_cov, &
                                       &cov_valid, niche_membership, pop_size, &
-                                      &num_niches, num_vars, niche_radius)
+                                      &num_niches, num_vars, niche_radius,chi_table_5(num_vars))
+      ! ! Update niche centers
         
         ! Create new population
         call create_new_generation(population, fitness, new_population, niche_membership, &
@@ -103,7 +178,7 @@ program CumulativeMultiNichingGA
                 if (niche_fitness(i) > -999.0) then
                     if (cov_valid(i)) then 
                       print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                           " Fitness = ", niche_fitness(i), " Mahalonobis;", " Stable?", niche_stable(i)
+                           " Fitness = ", niche_fitness(i), " Mahalanobis;", " Stable?", niche_stable(i)
                     else
                       print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
                            " Fitness = ", niche_fitness(i), " Euclidean;","   Stable?", niche_stable(i)
@@ -121,7 +196,7 @@ program CumulativeMultiNichingGA
         if (niche_fitness(i) > -999.0) then
           if (cov_valid(i)) then 
             print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                 " Fitness = ", niche_fitness(i)-1, " Mahalonobis;", " Stable?", niche_stable(i)
+                 " Fitness = ", niche_fitness(i)-1, " Mahalanobis;", " Stable?", niche_stable(i)
           else
             print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
                  " Fitness = ", niche_fitness(i)-1, " Euclidean;", "   Stable?", niche_stable(i)
@@ -270,7 +345,7 @@ contains
         real :: dist
         real, dimension(dims) :: diff
         real, dimension(dims) :: temp
-        
+       
         diff = point1 - point2
         ! temp = inv_cov * diff (using BLAS SGEMV for efficiency)
         call sgemv('N', dims, dims, 1.0, inv_cov, dims, diff, 1, 0.0, temp, 1)
@@ -324,7 +399,7 @@ contains
             end if
             
             ! Calculate stability factor (0 = unstable, 1 = very stable)
-            max_stable_gens = min(50.0, real(generation))  ! Max stability window, never 0. At least 30 gens.
+            max_stable_gens = min(50.0, real(generation))  ! Max stability window, never 0. At least 50 gens.
             stability_factor = min(1.0, real(stability_count(i)) / max_stable_gens)
             
             ! Reduce alpha for stable niches (more memory)
@@ -461,8 +536,8 @@ contains
             end if
         end do
     end subroutine update_niche_covariances
-    
-    ! Update niche centers based on current population
+
+        ! Update niche centers based on current population
     subroutine update_niches(pop, fit, centers, center_fits, num_nich, size, dims, radius)
         real, dimension(size, dims), intent(in) :: pop
         real, dimension(size), intent(in) :: fit
@@ -525,80 +600,102 @@ contains
             end if
         end if
     end subroutine update_niches
+
+    ! Update niche centers based on current population
+    subroutine update_niches_mahalanobis(pop, fit, centers, center_fits, num_nich, size, dims, radius, cov_valid, inv_cov, chi_threshold)
+        real, dimension(size, dims), intent(in) :: pop
+        real, dimension(size), intent(in) :: fit
+        real, dimension(num_nich, dims), intent(inout) :: centers
+        real, dimension(num_nich), intent(inout) :: center_fits
+        real, dimension(num_nich, dims, dims), intent(in) :: inv_cov
+        logical, dimension(num_nich), intent(in) :: cov_valid
+        integer, intent(in) :: num_nich, size, dims
+        real, intent(in) :: radius
+        real, intent(in) :: chi_threshold
+        integer :: i, j, k, best_idx
+        real :: best_fit, dist
+        logical :: is_new_niche
+
+
+        ! First, find the best individual
+        best_fit = -1.0
+        best_idx = 1
+        do i = 1, size
+          if (fit(i) > best_fit) then
+            best_fit = fit(i)
+            best_idx = i
+          end if
+        end do
+        
+        ! Check if we need to add a new niche center
+        if (center_fits(1) < 0.0) then
+          ! First niche - just add it
+          centers(1,:) = pop(best_idx,:)
+          center_fits(1) = fit(best_idx)
+        else
+          ! Check if the best individual is close to any existing niche
+          is_new_niche = .true.
+          do j = 1, num_nich
+            if (center_fits(j) < 0.0) exit  ! No more valid niches
+            ! Use Mahalanobis distance preferentially if possible
+            if (cov_valid(j)) then
+              dist = mahalanobis_distance(pop(best_idx,:), centers(j,:),inv_cov(j,:,:),dims)
+              if (dist**2 <= chi_threshold) then
+                if (fit(best_idx) > center_fits(j)) then
+                    centers(j,:) = pop(best_idx,:)
+                    center_fits(j) = fit(best_idx)
+                end if
+                is_new_niche = .false.
+                exit
+              endif
+            else 
+              ! Or calculate Euclidean distance to this niche center
+              dist = 0.0
+              do k = 1, dims
+                  dist = dist + (pop(best_idx,k) - centers(j,k))**2
+              end do
+              dist = sqrt(dist)
+              if (dist < radius) then
+                  ! Too close to an existing niche, update if better
+                  if (fit(best_idx) > center_fits(j)) then
+                      centers(j,:) = pop(best_idx,:)
+                      center_fits(j) = fit(best_idx)
+                  end if
+                  is_new_niche = .false.
+                  exit
+              end if
+            endif
+          end do
+          
+          ! If it's far enough from all existing niches, add a new one
+          if (is_new_niche) then
+              do j = 1, num_nich
+                  if (center_fits(j) < 0.0) then
+                      centers(j,:) = pop(best_idx,:)
+                      center_fits(j) = fit(best_idx)
+                      exit
+                  end if
+              end do
+          end if
+        end if
+    end subroutine update_niches_mahalanobis
     
     ! Assign each individual to a niche using Mahalanobis distance where available
     ! Mahalonobis distance: doi.org/10.1007/s13171-019-00164-5
     ! Outlier analysis: 10.1007/978-3-319-47578-3
     ! Perfect explanation: https://www.cfholbert.com/blog/outlier_mahalanobis_distance/
     subroutine assign_niches_mahalanobis(pop, centers, inv_cov, cov_valid, membership, &
-                                        size, num_nich, dims, radius)
+                                        size, num_nich, dims, radius, chi_threshold)
         real, dimension(size, dims), intent(in) :: pop
         real, dimension(num_nich, dims), intent(in) :: centers
         real, dimension(num_nich, dims, dims), intent(in) :: inv_cov
         logical, dimension(num_nich), intent(in) :: cov_valid
         integer, dimension(size), intent(out) :: membership
         integer, intent(in) :: size, num_nich, dims
-        real, intent(in) :: radius
+        real, intent(in) :: radius, chi_threshold
         integer :: i, j, k, closest_niche
         real :: dist, min_dist
-        real :: chi_threshold
-        real,parameter :: chi_table_01(37)=(/10.828, 13.816, 16.266, 18.467, 20.515, &
-                                     & 22.458, 24.322, 26.124, 27.877, 29.588, &
-                                     & 31.264, 32.909, 34.528, 36.123, 37.697, &
-                                     & 39.252, 40.790, 42.312, 43.820, 45.315, &
-                                     & 46.797, 48.268, 49.728, 51.179, 52.620, &
-                                     & 54.052, 55.476, 56.892, 58.302, 59.703, &
-                                     & 73.402, 86.661, 99.607,112.317,124.839, &
-                                     & 137.208,149.449/) ! At 0.1% significance
-        real,parameter :: chi_table_1(37)=(/ 6.635,  9.210, 11.345, 13.277, 15.086, &
-                                     &16.812, 18.475, 20.090, 21.666, 23.209, &
-                                     &24.725, 26.217, 27.688, 29.141, 30.578, &
-                                     &32.000, 33.409, 34.805, 36.191, 37.566, &
-                                     &38.932, 40.289, 41.638, 42.980, 44.314, &
-                                     &45.642, 46.963, 48.278, 49.588, 50.892, &
-                                     &63.691, 76.154, 88.379,100.425,112.329, &
-                                     &124.116,135.807/) ! At 1% significance
-        real,parameter :: chi_table_5(37)=(/ 3.841, 5.991, 7.815, 9.488,11.070,12.592,14.067,15.507,16.919,18.307,&
-                                         &19.675,21.026,22.362,23.685,24.996,26.296,27.587,28.869,30.144,31.410,&
-                                         &32.671,33.924,35.172,36.415,37.652,38.885,40.113,41.337,42.557,43.773,&
-                                         &55.758,67.505,79.082,90.531,101.879,113.145,124.342/) ! At 5% significance
-        real,parameter :: chi_table_10(37)=(/ 2.706, 4.605, 6.251, 7.779, 9.236,10.645,12.017,13.362,14.684,15.987,&
-                                            &17.275,18.549,19.812,21.064,22.307,23.542,24.769,25.989,27.204,28.412,&
-                                            &29.615,30.813,32.007,33.196,34.382,35.563,36.741,37.916,39.087,40.256,&
-                                            &51.805,63.167,74.397,85.527, 96.578,107.565,118.498/) ! At 10% significance
-        ! Bad idea how to provide tighter niches:
-        real,parameter :: chi_table_50(37)=(/ 0.455, 1.386, 2.366, 3.357, 4.351, &
-                                    & 5.348, 6.346, 7.344, 8.343, 9.342, &
-                                    &10.341,11.340,12.340,13.339,14.339, &
-                                    &15.338,16.338,17.338,18.338,19.337, &
-                                    &20.337,21.337,22.337,23.337,24.336, &
-                                    &25.336,26.336,27.336,28.336,29.336, &
-                                    &39.335,49.335,59.335,69.334,79.334, &
-                                    &89.334,99.334/) ! At 50% significance
-        real,parameter :: chi_table_70(37)=(/ 0.148, 0.713, 1.424, 2.195, 2.999, &
-                                    & 3.828, 4.671, 5.527, 6.393, 7.267, &
-                                    & 8.148, 9.034, 9.926,10.821,11.721, &
-                                    &12.624,13.531,14.440,15.352,16.266, &
-                                    &17.182,18.101,19.021,19.943,20.867, &
-                                    &21.792,22.719,23.647,24.577,25.508, &
-                                    &35.534,45.616,55.758,65.950,76.188, &
-                                    &86.464,96.774/) ! At 70% significance
-        real,parameter :: chi_table_90(37)=(/ 0.016, 0.211, 0.584, 1.064, 1.610, &
-                                    & 2.204, 2.833, 3.490, 4.168, 4.865, &
-                                    & 5.578, 6.304, 7.042, 7.790, 8.547, &
-                                    & 9.312,10.085,10.865,11.651,12.443, &
-                                    &13.240,14.041,14.848,15.659,16.473, &
-                                    &17.292,18.114,18.939,19.768,20.599, &
-                                    &29.588,39.364,49.475,59.770,70.195, &
-                                    &80.725,91.342/) ! At 90% significance
-        real,parameter :: chi_table_95(37)=(/ 0.004, 0.103, 0.352, 0.711, 1.145, &
-                                    & 1.635, 2.167, 2.733, 3.325, 3.940, &
-                                    & 4.575, 5.226, 5.892, 6.571, 7.261, &
-                                    & 7.962, 8.672, 9.390,10.117,10.851, &
-                                    &11.591,12.338,13.091,13.848,14.611, &
-                                    &15.379,16.151,16.928,17.708,18.493, &
-                                    &26.509,35.249,44.314,53.540,62.830, &
-                                    &72.153,81.500/)
+
         
         do i = 1, size
             membership(i) = 0  ! Default - no niche
@@ -611,6 +708,9 @@ contains
                 if (cov_valid(j)) then
                     ! Use Mahalanobis distance
                     dist = mahalanobis_distance(pop(i,:), centers(j,:), inv_cov(j,:,:), dims)
+                    ! Rescale it so the accepted values run between 0,2
+                    ! Not ideal, but... at least a bit comparable?
+                    dist = sqrt(2.0) * dist / sqrt(chi_threshold)
                 else
                     ! Fall back to Euclidean distance
                     dist = 0.0
@@ -619,54 +719,22 @@ contains
                     end do
                     dist = sqrt(dist)
                 end if
-                
+          
                 if (dist < min_dist) then
                     min_dist = dist
                     closest_niche = j
                 end if
             end do
-            
-            ! Assign to closest niche if within radius (use adaptive radius for Mahalanobis)
+        ! Assign to closest niche with unified threshold
             if (closest_niche > 0) then
                 if (cov_valid(closest_niche)) then
-                    ! For Mahalanobis distance, use chi-square threshold
-                    ! Higher than 30D is very likely completely useless, but the code snippet may help someone
-                    SELECT CASE(dims)
-                      CASE(1:30)
-                        chi_threshold = chi_table_01(dims)
-                      CASE(31:39)
-                        chi_threshold = chi_table_10(30)
-                      CASE(40:49)
-                        chi_threshold = chi_table_10(31)
-                      CASE(50:59)
-                        chi_threshold = chi_table_10(32)
-                      CASE(60:69)
-                        chi_threshold = chi_table_10(33)
-                      CASE(70:79)
-                        chi_threshold = chi_table_10(34)
-                      CASE(80:99)
-                        chi_threshold = chi_table_10(35)
-                      CASE(100:999)
-                        chi_threshold = chi_table_10(36)
-                      CASE DEFAULT
-                        chi_threshold = chi_table_10(37)  ! Use last value for very high dims
-                    END SELECT
-                    
-                    ! Chi-square threshold for Mahalanobis distance
-                    ! It provides a multivariate test whether a point is an outlier = hypothesis
-                    ! If we are following statistics, 95% threshold should be used
-                    ! However, this provides VERY broad niches... unless sampled enough...
-                    ! We will likely deal with rather poor sampling and might need to use broader definition of an outlier.
-                    ! = large p-value
-                    ! NOTE: This still behaves a little counter-intuitively...
-                    !       It may also not be the best idea and we might want to go with some empirical constant.
-
-                    if (min_dist**2 <= chi_threshold) then  ! Square for comparison
-                        membership(i) = closest_niche 
+                    ! For Mahalanobis, use chi-square threshold
+                    if (min_dist**2 <= 2.0) then
+                        membership(i) = closest_niche
                     end if
                 else
-                    ! Use original Euclidean threshold
-                    if (min_dist <= 2.0 * radius) then
+                    ! For Euclidean, use radius threshold
+                    if (min_dist <= 2.0) then  ! Since we rescaled by radius
                         membership(i) = closest_niche
                     end if
                 end if
@@ -674,7 +742,7 @@ contains
         end do
     end subroutine assign_niches_mahalanobis
     
-    ! Legacy assignment function (kept for compatibility)
+    ! Legacy assignment function (kept for compatibility, testing)
     subroutine assign_niches(pop, centers, membership, size, num_nich, dims, radius)
         real, dimension(size, dims), intent(in) :: pop
         real, dimension(num_nich, dims), intent(in) :: centers
