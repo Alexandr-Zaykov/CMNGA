@@ -2,22 +2,31 @@ program CumulativeMultiNichingGA
     implicit none
     
     ! External BLAS/LAPACK functions
-    external :: sgemv, sdot, sger, sgetrf, sgetri, sgecon, spotrf, spotri
-    real :: sdot
+    external :: sgemv, sger, sgetrf, sgetri, sgecon, spotrf, spotri
     
     ! Parameters
     ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
-    integer, parameter :: pop_size = 200  ! Population size
-    integer, parameter :: max_gen = 60          ! Maximum generations
+    integer, parameter :: pop_size = 200 ! Population size
+    integer, parameter :: max_gen = 400         ! Maximum generations
     integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
-    integer, parameter :: num_niches = 15        ! Number of niches to maintain
-    integer, parameter :: min_niche_size = 3         ! Minimum individuals per niche for covariance
-    real, parameter :: mutate_rate = 0.30         ! Mutation rate
-    real, parameter :: cross_rate = 0.05           ! Crossover rate
+    integer, parameter :: num_niches = 20        ! Number of niches to maintain
+    integer, parameter :: min_niche_size = 3         ! Minimum current individuals per niche for covariance
+    real, parameter :: mutate_rate = 0.15         ! Mutation rate
+    real, parameter :: cross_rate = 0.85           ! Crossover rate
     real, parameter :: radius_factor = 0.05       ! Niche radius factor
     real, parameter :: min_bound = -4.0           ! Lower bound for variables
     real, parameter :: max_bound = 4.0            ! Upper bound for variables
     real, parameter :: reg_param = 1e-6           ! Regularization parameter for covariance
+  ! New parameters for adaptive memory
+    real, parameter :: alpha_start = 0.9    ! High weight for current gen early on (exploration)
+    real, parameter :: alpha_end = 0.3      ! Lower weight later (exploitation/stability)
+    real, parameter :: niche_stability_threshold = 0.05 ! Distance threshold for "stable" niche
+    integer, parameter :: transition_gens = max_gen/2 + 1  ! Generations over which to transition – arbitrary. +1 to avoid 0.
+  ! New arrays to track niche history
+    real, dimension(num_niches, num_vars) :: prev_niche_centers
+    real, dimension(num_niches) :: niche_alpha  ! Individual alpha per niche
+    integer, dimension(num_niches) :: niche_stability_count
+    logical, dimension(num_niches) :: cov_initialized
     
     ! Variables
     real, dimension(pop_size, num_vars) :: population      ! Current population
@@ -58,26 +67,30 @@ program CumulativeMultiNichingGA
         
         ! Update niche centers
         call update_niches(population, fitness, niche_centers, niche_fitness, &
-                          num_niches, pop_size, num_vars, niche_radius)
+                          &num_niches, pop_size, num_vars, niche_radius)
         
         ! Assign individuals to niches
         call assign_niches(population, niche_centers, niche_membership, &
-                          pop_size, num_niches, num_vars, niche_radius)
+                          &pop_size, num_niches, num_vars, niche_radius)
         
+        call update_adaptive_alpha(niche_centers, prev_niche_centers, niche_stability_count, &
+                                  &niche_alpha, gen, num_niches, num_vars, niche_stability_threshold,&
+                                  &alpha_start, alpha_end)
         ! Update covariance matrices for each niche
         call update_niche_covariances(population, niche_membership, niche_centers, &
-                                     niche_covariance, niche_inv_cov, cov_valid, &
-                                     pop_size, num_niches, num_vars)
+                                     &niche_covariance, niche_inv_cov, cov_valid, &
+                                     &pop_size, num_niches, num_vars,&
+                                     &niche_alpha,cov_initialized)
         
         ! Re-assign individuals using Mahalanobis distance where possible
         call assign_niches_mahalanobis(population, niche_centers, niche_inv_cov, &
-                                      cov_valid, niche_membership, pop_size, &
-                                      num_niches, num_vars, niche_radius)
+                                      &cov_valid, niche_membership, pop_size, &
+                                      &num_niches, num_vars, niche_radius)
         
         ! Create new population
         call create_new_generation(population, fitness, new_population, niche_membership, &
-                                  pop_size, num_vars, num_niches, cross_rate, mutate_rate, &
-                                  min_bound, max_bound)
+                                  &pop_size, num_vars, num_niches, cross_rate, mutate_rate, &
+                                  &min_bound, max_bound)
         
         ! Replace old population with new one
         population = new_population
@@ -88,8 +101,13 @@ program CumulativeMultiNichingGA
             print *, "Best niches found:"
             do i = 1, num_niches
                 if (niche_fitness(i) > -999.0) then
-                    print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                           " Fitness = ", niche_fitness(i), " Mahalonobis: ", cov_valid(i)
+                    if (cov_valid(i)) then 
+                      print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
+                           " Fitness = ", niche_fitness(i), " Mahalonobis."
+                    else
+                      print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
+                           " Fitness = ", niche_fitness(i), " Euclidean."
+                    endif
                 end if
             end do
             print *
@@ -101,17 +119,104 @@ program CumulativeMultiNichingGA
     print *, "Final niches found:"
     do i = 1, num_niches
         if (niche_fitness(i) > -999.0) then
+          if (cov_valid(i)) then 
             print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                   " Value = ", niche_fitness(i) - 1.0, " Mahalonobis: ", cov_valid(i)
+                 " Fitness = ", niche_fitness(i)-1, " Mahalonobis."
+          else
+            print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
+                 " Fitness = ", niche_fitness(i)-1, " Euclidean."
+          endif
         end if
     end do
     call CPU_TIME(time_end)
     print *, "Time taken: ", time_end - time_start, " s"
     print *, "Anticipated Results: +-0.31,0.93,1.55,2.17,2.79,3.41"
     print *, "Number of evaluations: ", num_eval
-    
 contains
 
+    function det_posdef(A, n) result(det)
+    implicit none
+    
+    ! Arguments
+    integer, intent(in) :: n
+    real, intent(in) :: A(n,n)
+    real :: det
+    
+    ! Local variables
+    real :: A_copy(n,n)
+    integer :: info, i
+    character :: uplo = 'U'
+    
+    ! External LAPACK routine
+    external :: spotrf
+    
+    ! Copy the matrix since DPOTRF modifies it
+    A_copy = A
+    
+    ! Compute Cholesky factorization: A = U^T * U
+    call spotrf(uplo, n, A_copy, n, info)
+    
+    ! Check if factorization was successful
+    if (info /= 0) then
+        if (info < 0) then
+            write(*,*) 'Error: Illegal argument in DPOTRF at position', -info
+            call exit(8)
+        else
+            write(*,*) 'Error: Matrix is not positive definite'
+            call exit(8)
+        end if
+        det = 0.0d0
+        return
+    end if
+    
+    ! Compute determinant as product of squares of diagonal elements
+    ! det(A) = det(U^T) * det(U) = [det(U)]^2 = [prod(U_ii)]^2
+    det = 1.0d0
+    do i = 1, n
+        det = det * A_copy(i,i)**2
+    end do
+    
+    end function det_posdef
+
+
+  ! Alternative version using LU decomposition (more general but less efficient for pos def matrices)
+    function det_general(A, n) result(det)
+    implicit none
+    
+    ! Arguments
+    integer, intent(in) :: n
+    real, intent(in) :: A(n,n)
+    real :: det
+    
+    ! Local variables
+    real :: A_copy(n,n)
+    integer :: ipiv(n), info, i
+    
+    ! External LAPACK routine
+    external :: sgetrf
+    
+    ! Copy the matrix
+    A_copy = A
+    
+    ! Compute LU factorization with partial pivoting
+    call sgetrf(n, n, A_copy, n, ipiv, info)
+    
+    if (info /= 0) then
+        write(*,*) 'Error in LU factorization'
+        det = 0.0d0
+        return
+    end if
+    
+    ! Compute determinant from diagonal elements and pivot count
+    det = 1.0d0
+    do i = 1, n
+        if (ipiv(i) /= i) then
+            det = -det  ! Account for row swaps
+        end if
+        det = det * A_copy(i,i)
+    end do
+    
+    end function det_general
     ! Initialize population randomly
     subroutine initialize_population(pop, size, dims, lower, upper)
         real, dimension(size, dims), intent(out) :: pop
@@ -163,8 +268,7 @@ contains
         integer, intent(in) :: dims
         real, dimension(dims), intent(in) :: point1, point2
         real, dimension(dims, dims), intent(in) :: inv_cov
-        integer :: i,j
-        real :: dist, dot_product_result
+        real :: dist
         real, dimension(dims) :: diff
         real, dimension(dims) :: temp
         
@@ -174,10 +278,72 @@ contains
         ! dist = sqrt(diff^T * temp) (using intrinsic – I failed to use sdot)
         dist = sqrt(max(0.0, dot_product(diff,temp)))
     end function mahalanobis_distance
+
+    subroutine update_adaptive_alpha(centers, prev_centers, stability_count, alpha, &
+                                generation, num_nich, dims, stab_threshold,alpha_start,alpha_end)
+    real, dimension(num_nich, dims), intent(in) :: centers
+    real, dimension(num_nich, dims), intent(inout) :: prev_centers
+    integer, dimension(num_nich), intent(inout) :: stability_count
+    real, dimension(num_nich), intent(out) :: alpha
+    integer, intent(in) :: generation, num_nich, dims
+    real, intent(in) :: stab_threshold,alpha_start,alpha_end
     
+    integer :: i, j
+    real :: base_alpha, stability_factor, distance, max_stable_gens
+    real, parameter :: stability_bonus = 0.2  ! How much to reduce alpha for stable niches
+    
+    ! Calculate base alpha that changes with generation
+    if (generation <= transition_gens) then
+        ! Linear transition from alpha_start to alpha_end
+        base_alpha = alpha_start - (alpha_start - alpha_end) * &
+                    real(generation - 1) / real(transition_gens)
+    else
+        base_alpha = alpha_end
+    end if
+    
+    ! Adjust alpha for each niche based on stability
+    do i = 1, num_nich
+        if (centers(i, 1) > -998.0) then  ! Valid niche
+            
+            ! Calculate how much this niche has moved
+            distance = 0.0
+            if (prev_centers(i, 1) > -998.0) then  ! Had previous position
+                do j = 1, dims
+                    distance = distance + (centers(i, j) - prev_centers(i, j))**2
+                end do
+                distance = sqrt(distance)
+                
+                ! Update stability count
+                if (distance < stab_threshold) then
+                    stability_count(i) = stability_count(i) + 1
+                else
+                    stability_count(i) = 0  ! Reset if niche moved significantly
+                end if
+            else
+                stability_count(i) = 0  ! New niche
+            end if
+            
+            ! Calculate stability factor (0 = unstable, 1 = very stable)
+            max_stable_gens = min(50.0, real(generation) * 0.1)  ! Max stability window, never 0.
+            stability_factor = min(1.0, real(stability_count(i)) / max_stable_gens)
+            
+            ! Reduce alpha for stable niches (more memory)
+            alpha(i) = base_alpha - stability_bonus * stability_factor
+            alpha(i) = max(0.1, min(0.95, alpha(i)))  ! Clamp to reasonable range
+            
+            ! Update previous center for next iteration
+            prev_centers(i, :) = centers(i, :)
+        else
+            niche_alpha(i) = base_alpha  ! Default for invalid niches
+        end if
+    end do
+    end subroutine update_adaptive_alpha
+
     ! Update covariance matrices for each niche using LAPACK
+    ! ADAPTIVE
     subroutine update_niche_covariances(pop, membership, centers, cov_matrices, &
-                                       inv_cov_matrices, cov_valid, size, num_nich, dims)
+                                      &inv_cov_matrices, cov_valid, size, num_nich, dims,&
+                                      &alpha,cov_init)
         real, dimension(size, dims), intent(in) :: pop
         integer, dimension(size), intent(in) :: membership
         real, dimension(num_nich, dims), intent(in) :: centers
@@ -185,10 +351,12 @@ contains
         real, dimension(num_nich, dims, dims), intent(out) :: inv_cov_matrices
         logical, dimension(num_nich), intent(out) :: cov_valid
         integer, intent(in) :: size, num_nich, dims
+        real, dimension(num_nich), intent(in) :: alpha
+        logical, dimension(num_nich), intent(inout) :: cov_init
         
         integer :: niche_id, i, j, k, count, info
         real, dimension(dims) :: mean_vec, diff
-        real, dimension(dims, dims) :: cov_mat, work_mat
+        real, dimension(dims, dims) :: cov_mat, work_mat, blended_cov
         integer, dimension(size) :: niche_members
         integer, dimension(dims) :: ipiv
         real, dimension(dims) :: work
@@ -235,8 +403,18 @@ contains
                     cov_mat(j, j) = cov_mat(j, j) + reg_param
                 end do
                 
+                  ! Adaptive blending with previous covariance
+                if (.not. cov_init(niche_id)) then
+                    ! First time - use current calculation
+                    blended_cov = cov_mat
+                    cov_init(niche_id) = .true.
+                else
+                    ! Blend with previous covariance using adaptive alpha
+                    blended_cov = alpha(niche_id) * cov_mat + &
+                                 (1.0 - alpha(niche_id)) * cov_matrices(niche_id, :, :)
+                end if
                 ! Store covariance matrix
-                cov_matrices(niche_id, :, :) = cov_mat
+                cov_matrices(niche_id, :, :) = blended_cov
                 
                 ! Calculate inverse using LAPACK
                 work_mat = cov_mat  ! Copy since LAPACK destroys input
@@ -259,6 +437,7 @@ contains
                 end if
                 
                 ! If LAPACK inversion failed, try Cholesky decomposition for SPD matrices
+                ! If Cholesky fails, default to Euclidean norm 
                 if (.not. cov_valid(niche_id)) then
                     work_mat = cov_mat
                     call spotrf('U', dims, work_mat, dims, info)
@@ -451,7 +630,7 @@ contains
                     ! Higher than 30D is very likely completely useless, but the code snippet may help someone
                     SELECT CASE(dims)
                       CASE(1:30)
-                        chi_threshold = chi_table_5(dims)
+                        chi_threshold = chi_table_01(dims)
                       CASE(31:39)
                         chi_threshold = chi_table_10(30)
                       CASE(40:49)
@@ -477,6 +656,7 @@ contains
                     ! We will likely deal with rather poor sampling and might need to use broader definition of an outlier.
                     ! = large p-value
                     ! NOTE: This still behaves a little counter-intuitively...
+                    !       It may also not be the best idea and we might want to go with some empirical constant.
 
                     if (min_dist**2 <= chi_threshold) then  ! Square for comparison
                         membership(i) = closest_niche 
@@ -591,26 +771,26 @@ contains
                 ! Apply sharing only if more than one individual in niche
                 do j = 1, size
                     if (membership(j) == i) then
-                        share_sum = 1.0  ! Start with self
-                        
-                        ! Add sharing component from other individuals in same niche
-                        do k = 1, size
-                            if (k /= j .and. membership(k) == i) then
-                                dist = 0.0
-                                do l = 1, dims
-                                    dist = dist + (pop(j,l) - pop(k,l))**2
-                                end do
-                                dist = sqrt(dist)
-                                
-                                ! Triangular sharing function
-                                if (dist < 0.1) then
-                                    share_sum = share_sum + (1.0 - dist/0.1)
-                                end if
-                            end if
-                        end do
-                        
-                        ! Apply sharing factor
-                        shared_fit(j) = fit(j) / share_sum
+                      share_sum = 1.0  ! Start with self
+                      
+                      ! Add sharing component from other individuals in same niche
+                      do k = 1, size
+                          if (k /= j .and. membership(k) == i) then
+                              dist = 0.0
+                              do l = 1, dims
+                                  dist = dist + (pop(j,l) - pop(k,l))**2
+                              end do
+                              dist = sqrt(dist)
+                              
+                              ! Triangular sharing function
+                              if (dist < 0.1) then
+                                  share_sum = share_sum + (1.0 - dist/0.1)
+                              end if
+                          end if
+                      end do
+                      
+                      ! Apply sharing factor
+                      shared_fit(j) = fit(j) / share_sum
                     end if
                 end do
             end if
