@@ -6,8 +6,8 @@ program CumulativeMultiNichingGA
     
     ! Parameters
     ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
-    integer, parameter :: pop_size = 200 ! Population size
-    integer, parameter :: max_gen = 400         ! Maximum generations
+    integer, parameter :: pop_size = 100 ! Population size
+    integer, parameter :: max_gen = 500       ! Maximum generations
     integer, parameter :: num_vars = 2           ! Number of variables in optimization (up to 12D)
     integer, parameter :: num_niches = 20        ! Number of niches to maintain
     integer, parameter :: min_niche_size = 3         ! Minimum current individuals per niche for covariance
@@ -20,13 +20,13 @@ program CumulativeMultiNichingGA
   ! New parameters for adaptive memory
     real, parameter :: alpha_start = 0.9    ! High weight for current gen early on (exploration)
     real, parameter :: alpha_end = 0.3      ! Lower weight later (exploitation/stability)
-    real, parameter :: niche_stability_threshold = 0.05 ! Distance threshold for "stable" niche
-    integer, parameter :: transition_gens = max_gen/2 + 1  ! Generations over which to transition – arbitrary. +1 to avoid 0.
+    real, parameter :: niche_stability_threshold = 0.01   ! Distance threshold for "stable" niche
+    integer, parameter :: transition_gens = 90*max_gen/100 + 1  ! Generations over which to transition – arbitrary. +1 to avoid acc. 0.
   ! New arrays to track niche history
     real, dimension(num_niches, num_vars) :: prev_niche_centers
     real, dimension(num_niches) :: niche_alpha  ! Individual alpha per niche
     integer, dimension(num_niches) :: niche_stability_count
-    logical, dimension(num_niches) :: cov_initialized
+    logical, dimension(num_niches) :: cov_initialized=.false., niche_stable=.false.
     
     ! Variables
     real, dimension(pop_size, num_vars) :: population      ! Current population
@@ -75,7 +75,7 @@ program CumulativeMultiNichingGA
         
         call update_adaptive_alpha(niche_centers, prev_niche_centers, niche_stability_count, &
                                   &niche_alpha, gen, num_niches, num_vars, niche_stability_threshold,&
-                                  &alpha_start, alpha_end)
+                                  &alpha_start, alpha_end, niche_stable)
         ! Update covariance matrices for each niche
         call update_niche_covariances(population, niche_membership, niche_centers, &
                                      &niche_covariance, niche_inv_cov, cov_valid, &
@@ -103,10 +103,10 @@ program CumulativeMultiNichingGA
                 if (niche_fitness(i) > -999.0) then
                     if (cov_valid(i)) then 
                       print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                           " Fitness = ", niche_fitness(i), " Mahalonobis."
+                           " Fitness = ", niche_fitness(i), " Mahalonobis;", " Stable?", niche_stable(i)
                     else
                       print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                           " Fitness = ", niche_fitness(i), " Euclidean."
+                           " Fitness = ", niche_fitness(i), " Euclidean;","   Stable?", niche_stable(i)
                     endif
                 end if
             end do
@@ -121,10 +121,10 @@ program CumulativeMultiNichingGA
         if (niche_fitness(i) > -999.0) then
           if (cov_valid(i)) then 
             print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                 " Fitness = ", niche_fitness(i)-1, " Mahalonobis."
+                 " Fitness = ", niche_fitness(i)-1, " Mahalonobis;", " Stable?", niche_stable(i)
           else
             print *, "Niche ", i, ": Position = ", niche_centers(i,:), &
-                 " Fitness = ", niche_fitness(i)-1, " Euclidean."
+                 " Fitness = ", niche_fitness(i)-1, " Euclidean;", "   Stable?", niche_stable(i)
           endif
         end if
     end do
@@ -145,7 +145,6 @@ contains
     ! Local variables
     real :: A_copy(n,n)
     integer :: info, i
-    character :: uplo = 'U'
     
     ! External LAPACK routine
     external :: spotrf
@@ -154,7 +153,7 @@ contains
     A_copy = A
     
     ! Compute Cholesky factorization: A = U^T * U
-    call spotrf(uplo, n, A_copy, n, info)
+    call spotrf('U', n, A_copy, n, info)
     
     ! Check if factorization was successful
     if (info /= 0) then
@@ -280,11 +279,12 @@ contains
     end function mahalanobis_distance
 
     subroutine update_adaptive_alpha(centers, prev_centers, stability_count, alpha, &
-                                generation, num_nich, dims, stab_threshold,alpha_start,alpha_end)
+                                generation, num_nich, dims, stab_threshold,alpha_start,alpha_end,stable)
     real, dimension(num_nich, dims), intent(in) :: centers
     real, dimension(num_nich, dims), intent(inout) :: prev_centers
     integer, dimension(num_nich), intent(inout) :: stability_count
     real, dimension(num_nich), intent(out) :: alpha
+    logical,dimension(num_nich), intent(out) :: stable
     integer, intent(in) :: generation, num_nich, dims
     real, intent(in) :: stab_threshold,alpha_start,alpha_end
     
@@ -324,11 +324,14 @@ contains
             end if
             
             ! Calculate stability factor (0 = unstable, 1 = very stable)
-            max_stable_gens = min(50.0, real(generation) * 0.1)  ! Max stability window, never 0.
+            max_stable_gens = min(50.0, real(generation))  ! Max stability window, never 0. At least 30 gens.
             stability_factor = min(1.0, real(stability_count(i)) / max_stable_gens)
             
             ! Reduce alpha for stable niches (more memory)
-            alpha(i) = base_alpha - stability_bonus * stability_factor
+            ! we use the factor^6 for slow ramp up toward 1 in the beginning and focusing in the end
+            alpha(i) = base_alpha - stability_bonus * (stability_factor**6)
+            ! Check for the stability of the niche
+            IF(stability_factor.GT.0.99) stable(i)=.true.
             alpha(i) = max(0.1, min(0.95, alpha(i)))  ! Clamp to reasonable range
             
             ! Update previous center for next iteration
