@@ -75,18 +75,18 @@ program CumulativeMultiNichingGA
     ! Parameters
     ! There are further distribution parameters for crossover and mutation "eta_c" – we use 20 for both for now.
     integer, parameter :: pop_size = 50 ! Population size
-    integer, parameter :: max_gen = 400      ! Maximum generations
+    integer, parameter :: max_gen = 400    ! Maximum generations
     integer, parameter :: num_vars = 1           ! Number of variables in optimization (up to 30D)
     integer, parameter :: num_niches = 20        ! Number of niches to maintain
     integer, parameter :: min_niche_size = 3         ! Minimum current individuals per niche for covariance
-    real, parameter :: mutate_rate = 0.15         ! Mutation rate
-    real, parameter :: cross_rate = 0.85           ! Crossover rate
+    real, parameter :: mutate_rate = 0.25         ! Mutation rate
+    real, parameter :: cross_rate = 0.65           ! Crossover rate
     real, parameter :: radius_factor = 0.05       ! Niche radius factor
     real, parameter :: min_bound = -4.0           ! Lower bound for variables
     real, parameter :: max_bound = 4.0            ! Upper bound for variables
     real, parameter :: reg_param = 1e-6           ! Regularization parameter for covariance
   ! New parameters for adaptive memory
-    real, parameter :: alpha_start = 0.9    ! High weight for current gen early on (exploration)
+    real, parameter :: alpha_start = 0.95   ! High weight for current gen early on (exploration)
     real, parameter :: alpha_end = 0.3      ! Lower weight later (exploitation/stability)
     real, parameter :: niche_stability_threshold = 0.01   ! Distance threshold for "stable" niche
     integer, parameter :: transition_gens = 90*max_gen/100 + 1  ! Generations over which to transition – arbitrary. +1 to avoid acc. 0.
@@ -134,8 +134,10 @@ program CumulativeMultiNichingGA
         call evaluate_fitness(population, fitness, pop_size, num_vars, num_eval)
         
         ! Update niche centers
-        call update_niches(population, fitness, niche_centers, niche_fitness, &
-                          &num_niches, pop_size, num_vars, niche_radius)
+       !call update_niches(population, fitness, niche_centers, niche_fitness, &
+       !                  &num_niches, pop_size, num_vars, niche_radius)
+        call update_niches_improved(population, fitness, niche_centers, niche_fitness, &
+                           num_niches, pop_size, num_vars, niche_radius)
 
       ! This just does not work at all.
       ! call update_niches_mahalanobis(population, fitness, niche_centers, niche_fitness, &
@@ -143,9 +145,16 @@ program CumulativeMultiNichingGA
       !                                &niche_inv_cov,chi_table_01(num_vars))
         
         ! Assign individuals to niches
-        ! Legacy code. Curiously, it adds some niches. But that may be a random artifact.
+        ! Legacy code. Curiously, it adds some niches. Provides... better results?
         call assign_niches(population, niche_centers, niche_membership, &
                            &pop_size, num_niches, num_vars, niche_radius)
+        ! Assign individuals using Mahalanobis distance where possible
+        ! Falls back to Euclid whereever needed
+        ! Provides... worse results?
+        ! Often has problems with few niches.
+      ! call assign_niches_mahalanobis(population, niche_centers, niche_inv_cov, &
+      !                                &cov_valid, niche_membership, pop_size, &
+      !                                &num_niches, num_vars, niche_radius,chi_table_5(num_vars))
         
         call update_adaptive_alpha(niche_centers, prev_niche_centers, niche_stability_count, &
                                   &niche_alpha, gen, num_niches, num_vars, niche_stability_threshold,&
@@ -314,18 +323,34 @@ contains
         integer, intent(in) :: size, dims
         integer, intent(inout) :: evalfs
         integer :: i,j
+
+        real                               :: A(5), B(5), H(5), W(5), F = 0.0
+ 
+        data A /-20.0, -5.0, 0.0, 30.0, 30.0/
+        data B /-20.0, -25.0, 30.0, 0.0, -30.0/
+        data H /0.4, 0.2, 0.7, 1.0, 0.05/
+        data W /0.02, 0.5, 0.01, 2.0, 0.1/
+
        
         ! ADD THE SEARCH FUNCTION HERE
         do i = 1, size
             evalfs = evalfs + 1
             ! Example multi-modal function: Sum of sines
             if (dims == 1) then
-                fit(i) = sin(5.0 * pop(i,1))**6 * exp(-pop(i,1)**2)
+                  fit(i) = sin(5.0 * pop(i,1))**6 * exp(-pop(i,1)**2)
+                
                 ! Results: +-0.31,0.93,1.55,2.17,2.79,3.41
             else
                 ! 2D or higher: Combination of sines (only use first 2 dimensions for test)
-                fit(i) = sin(5.0 * pop(i,1))**2 * sin(5.0 * pop(i,2))**2 * &
-                         exp(-(pop(i,1)**2 + pop(i,2)**2)/2)
+                ! fit(i) = sin(5.0 * pop(i,1))**2 * sin(5.0 * pop(i,2))**2 * &
+                !        exp(-(pop(i,1)**2 + pop(i,2)**2)/2)
+                ! Different test function
+                F = 0.0 
+                do j = 1,5
+                    F = F + H(j) / (1.0 + W(j)*( (pop(i,1)-A(j))**2 + (pop(i,2)-B(j))**2 ))
+                enddo
+                fit(i) = F
+
                 ! Add contribution from other dimensions if present
                 if (dims > 2) then
                     do j = 3, dims
@@ -679,6 +704,120 @@ contains
           end if
         end if
     end subroutine update_niches_mahalanobis
+    subroutine update_niches_improved(pop, fit, centers, center_fits, num_nich, size, dims, radius)
+        real, dimension(size, dims), intent(in) :: pop
+        real, dimension(size), intent(in) :: fit
+        real, dimension(num_nich, dims), intent(inout) :: centers
+        real, dimension(num_nich), intent(inout) :: center_fits
+        integer, intent(in) :: num_nich, size, dims
+        real, intent(in) :: radius
+        
+        ! Local variables
+        integer :: i, j, k, idx
+        integer, dimension(size) :: sorted_indices
+        real :: dist
+        logical :: is_new_niche, niche_updated
+        integer :: candidates_to_consider, valid_niches
+        
+        ! Sort individuals by fitness (descending order)
+        call sort_by_fitness(fit, sorted_indices, size)
+        
+        ! Consider top candidates (but not more than available niche slots)
+        ! Process at least the top 10% of population or top 5 individuals, whichever is larger
+        candidates_to_consider = max(5, size / 10)
+        candidates_to_consider = min(candidates_to_consider, size)
+        
+        ! Count current valid niches
+        valid_niches = 0
+        do i = 1, num_nich
+            if (center_fits(i) > -999.0) valid_niches = valid_niches + 1
+        end do
+        
+        ! Process top candidates in order of fitness
+        do i = 1, candidates_to_consider
+            idx = sorted_indices(i)
+            is_new_niche = .true.
+            niche_updated = .false.
+            
+            ! Check against all existing niches
+            do j = 1, num_nich
+                if (center_fits(j) < -998.0) cycle  ! Skip invalid niches
+                
+                ! Calculate Euclidean distance to this niche center
+                dist = 0.0
+                do k = 1, dims
+                    dist = dist + (pop(idx,k) - centers(j,k))**2
+                end do
+                dist = sqrt(dist)
+                
+                ! If close to existing niche
+                if (dist < radius) then
+                    is_new_niche = .false.
+                    
+                    ! Update niche if this individual is better
+                    if (fit(idx) > center_fits(j)) then
+                        centers(j,:) = pop(idx,:)
+                        center_fits(j) = fit(idx)
+                        niche_updated = .true.
+                    end if
+                    exit  ! Don't assign to multiple niches
+                end if
+            end do
+            
+            ! If it's a new niche and we have space, add it
+            if (is_new_niche .and. valid_niches < num_nich) then
+                ! Find first empty slot
+                do j = 1, num_nich
+                    if (center_fits(j) < -998.0) then
+                        centers(j,:) = pop(idx,:)
+                        center_fits(j) = fit(idx)
+                        valid_niches = valid_niches + 1
+                        exit
+                    end if
+                end do
+            end if
+            
+            ! If we've filled all niche slots, we can stop early
+            if (valid_niches >= num_nich) exit
+        end do
+    
+    end subroutine update_niches_improved
+
+! Helper subroutine to sort individuals by fitness (descending)
+    subroutine sort_by_fitness(fitness, indices, size)
+        integer, intent(in) :: size
+        real, dimension(size), intent(in) :: fitness
+        integer, dimension(size), intent(out) :: indices
+        
+        integer :: i, j, temp_idx
+        real :: temp_fit
+        real, dimension(size) :: fitness_copy
+        
+        ! Initialize indices
+        do i = 1, size
+            indices(i) = i
+        end do
+        
+        ! Copy fitness array for sorting
+        fitness_copy = fitness
+        
+        ! Simple bubble sort (could be replaced with quicksort for larger populations)
+        do i = 1, size - 1
+            do j = i + 1, size
+                if (fitness_copy(i) < fitness_copy(j)) then
+                    ! Swap fitness values
+                    temp_fit = fitness_copy(i)
+                    fitness_copy(i) = fitness_copy(j)
+                    fitness_copy(j) = temp_fit
+                    
+                    ! Swap corresponding indices
+                    temp_idx = indices(i)
+                    indices(i) = indices(j)
+                    indices(j) = temp_idx
+                end if
+            end do
+        end do
+    end subroutine sort_by_fitness
     
     ! Assign each individual to a niche using Mahalanobis distance where available
     ! Mahalonobis distance: doi.org/10.1007/s13171-019-00164-5
