@@ -5,7 +5,9 @@
 Goal: Obtain LOCAL optima.
 
 This is a second-generation prototype code. It is still based on the old CMNGA code, hence to provide continuity, the repo is still named CMNGA.
+
 I switched from GA to ES as it provided better results for out testing function in fewer steps. There are many changes to the previous code:
+
 0) GA -> ES.
 1) BFGS post-processing of the found optima. Initial Hessian is approximated by the covariance matrix.
 2) Compartmentalization of the "five peaks function" and inclusion of further functions (incl. Rastrigin's) for further testing.
