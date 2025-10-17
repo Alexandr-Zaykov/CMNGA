@@ -16,5 +16,10 @@ TO DO:
 1) I still have to go over the populations and assignments. The code correctly converges to 4 highest peaks at sufficient samplings (~15 000 function evalfs), at low samplings it either finds the one broadest, or two highest. The 5th peak is drowned in the 'noise'.
 2) MPI implementation—split populations.
 
+PREREQUISITES:
+1) BLAS/LAPACK = we use single-precision; see module blas_external
+
+IDEAS:
+1) As we use SP = GPU acceleration?
 
 *Use at your own risk. Citations to the used literature are added continuously within the code.*
