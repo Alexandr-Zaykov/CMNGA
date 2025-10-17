@@ -2,7 +2,7 @@
 **Cumulative Multiple-Niching Evolution Strategy Algorithm with Adaptive Sampling and BFGS Post-Processing.**
 **Version 2.0**
 
-Goal: Obtain LOCAL minima.
+Goal: Obtain LOCAL optima.
 
 This is a second-generation prototype code. I switched from GA to ES as it provided better results for out testing function in fewer steps. There are many changes to the previous code:
 0) GA -> ES.
@@ -12,7 +12,9 @@ This is a second-generation prototype code. I switched from GA to ES as it provi
 4) Calculation of the Chi critical value. NOTE: The tabulation was good, but this leaves the code a) easier to expand to higher dimensions, b) easy to switch the percentile, c) I have not found any Fortran code that would include both. Read the comments!
 5) License text file.
 
-TO DO: I still have to go over the populations and assignments. The code correctly converges to 4 highest peaks at sufficient samplings (~15 000 function evalfs), at low samplings it either finds the one broadest, or two highest. The 5th peak is drowned in the 'noise'.
+TO DO:
+1) I still have to go over the populations and assignments. The code correctly converges to 4 highest peaks at sufficient samplings (~15 000 function evalfs), at low samplings it either finds the one broadest, or two highest. The 5th peak is drowned in the 'noise'.
+2) MPI implementation—split populations.
 
 
 *Use at your own risk. Citations to the used literature are added continuously within the code.*
