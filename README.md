@@ -25,4 +25,8 @@ PREREQUISITES:
 IDEAS:
 1) As we use SP = GPU acceleration?
 
+INTENT:
+
+This code is intended for the new the 'SPARC' program for singlet fission material exploration in Havlas group.
+
 *Use at your own risk. Citations to the used literature are added continuously within the code.*
