@@ -538,7 +538,8 @@ PROGRAM vanesa
     REAL, DIMENSION(num_niches) :: niche_radius_adaptive
     REAL :: niche_radius_base
     
-    INTEGER :: i, gen, num_eval, niche_id, member_count
+    INTEGER :: i,j
+    INTEGER :: gen, num_eval, niche_id, member_count
     INTEGER, DIMENSION(pop_size) :: niche_members
     REAL :: time_start, time_end
     
