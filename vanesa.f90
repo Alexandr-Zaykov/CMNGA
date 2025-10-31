@@ -124,7 +124,7 @@ CONTAINS
         
         REAL, DIMENSION(num_vars) :: x, x_new, grad, grad_new, search_dir, s, y, x_origin
         ! FIX 1: Use proper contiguous arrays for BLAS temporaries
-        REAL, DIMENSION(num_vars) :: temp_vec1, temp_vec2
+        REAL, DIMENSION(num_vars) :: temp_vec1
         REAL, DIMENSION(num_vars, num_vars) :: b_inv, b_inv_new
         REAL :: f, f_new, alpha, grad_norm, s_dot_y, rho, y_dot_b_inv_y
         REAL :: improvement, dist_from_origin, f_origin
@@ -571,37 +571,46 @@ PROGRAM vanesa
     
     ! === MAIN EVOLUTIONARY LOOP ===
     DO gen = 1, max_gen
+        print*, "1"
         CALL evaluate_fitness(population, fitness, pop_size, num_vars, num_eval)
         
+        print*, "2"
         CALL update_niches_improved(population, fitness, niche_centers, niche_fitness, &
                                     num_niches, pop_size, num_vars, niche_radius_base)
         
+        print*, "3"
         IF (gen == 1) THEN
             CALL assign_niches_euclidean(population, niche_centers, niche_membership, &
                                         pop_size, num_niches, num_vars, niche_radius_adaptive)
         END IF
         
+        print*, "4"
         CALL update_niche_covariances(population, niche_membership, niche_centers, &
                                       niche_inv_cov, cov_valid, &
                                       pop_size, num_niches, num_vars)
         
+        print*, "5"
         CALL assign_niches_mahalanobis(population, niche_centers, niche_inv_cov, &
                                       cov_valid, niche_membership, pop_size, &
                                       num_niches, num_vars, chin_calc)
         
+        print*, "6"
         CALL update_adaptive_niche_radius(population, niche_membership, niche_centers, &
                                          niche_radius_adaptive, niche_radius_base, &
                                          pop_size, num_niches, num_vars)
         
+        print*, "7"
         CALL create_new_generation_cmaes(new_population, niche_membership, &
                                         niche_centers, pop_size, num_vars, num_niches, &
                                         cmaes_sigma, cmaes_cov, min_bound, max_bound)
         
+        print*, "8"
         CALL inject_diversity(new_population, niche_membership, pop_size, num_vars, &
                              min_bound, max_bound, diversity_rate)
         
         population = new_population
         
+        print*, "9"
         DO niche_id = 1, num_niches
             IF (is_niche_valid(niche_id, niche_centers, num_niches, num_vars)) THEN
                 CALL get_niche_members(niche_membership, niche_id, niche_members, &
@@ -622,6 +631,7 @@ PROGRAM vanesa
             END IF
         END DO
         
+        print*, "10"
         IF (MOD(gen, merge_interval) == 0) THEN
             CALL merge_overlapping_niches(niche_centers, niche_fitness, &
                                          niche_radius_adaptive, cmaes_sigma, &
@@ -631,10 +641,12 @@ PROGRAM vanesa
                                  cmaes_sigma, pop_size, num_niches, num_vars)
         END IF
         
+        print*, "11"
         IF (MOD(gen, print_interval) == 0) THEN
             CALL print_progress(gen, niche_centers, niche_fitness, niche_radius_adaptive, &
                                cmaes_sigma, num_eval, num_niches, num_vars)
         END IF
+        print*, "12"
     END DO
     
     ! === BFGS REFINEMENT PHASE ===
@@ -653,9 +665,9 @@ PROGRAM vanesa
             END DO
             
             ! FIX 7: Explicit copy of covariance matrix slice
-            DO i = 1, num_vars
-                DO gen = 1, num_vars
-                    work_mat(i, gen) = cmaes_sigma(niche_id)**2 * cmaes_cov(niche_id, i, gen)
+            DO j = 1, num_vars
+                DO i = 1, num_vars
+                    work_mat(i, j) = cmaes_sigma(niche_id)**2 * cmaes_cov(niche_id, i, j)
                 END DO
             END DO
             
@@ -700,12 +712,10 @@ CONTAINS
         INTEGER, INTENT(IN) :: niche_id, num_nich, dims
         REAL, DIMENSION(num_nich, dims), INTENT(IN) :: centers
         LOGICAL :: valid
-        ! Ugly function, I am sorry
-        IF (niche_id .le. 0) THEN
-          valid = .FALSE.
-        ELSE
-          valid = (centers(niche_id, 1) > invalid_check)
-        ENDIF
+        ! Better looking function :-)
+        valid = .FALSE.
+        IF (niche_id .gt. 0) valid = (centers(niche_id, 1) > invalid_check)
+
     END FUNCTION is_niche_valid
     
     FUNCTION euclidean_distance_explicit(point1, point2, dims) RESULT(dist)
@@ -1056,9 +1066,9 @@ CONTAINS
                     new_radius = MAX(radius_adaptive(survivor_idx), &
                                     euclidean_dist + radius_adaptive(merged_idx))
                     radius_adaptive(survivor_idx) = new_radius
-                    
-                    PRINT *, "Merged ", i, j, "with centers:", (centers(i,k), k=1,dims), &
-                            " and", (centers(j,k), k=1,dims)
+                   !I will put this behind an option later – it creates an unbearable amount of print-spam 
+                   !PRINT *, "Merged ", i, j, "with centers:", (centers(i,k), k=1,dims), &
+                   !        " and", (centers(j,k), k=1,dims)
                     
                     CALL invalidate_niche(merged_idx, centers, center_fits, sigma, c, pc, ps, &
                                         initialized, num_nich, dims)
@@ -1176,7 +1186,7 @@ CONTAINS
         REAL, DIMENSION(dims, dims) :: cov_mat, work_mat
         INTEGER, DIMENSION(size) :: members
         INTEGER, DIMENSION(dims) :: ipiv
-        REAL, DIMENSION(dims) :: work
+        REAL, DIMENSION(4*dims) :: work
         REAL :: rcond
         INTEGER, DIMENSION(dims) :: iwork
         
@@ -1283,7 +1293,7 @@ CONTAINS
         REAL, INTENT(IN) :: chin
         LOGICAL, INTENT(INOUT) :: initialized
         
-        INTEGER :: i, j, k, best_idx, idx
+        INTEGER :: i, j, k, idx
         REAL, DIMENSION(member_count) :: member_fitness
         REAL :: mu_eff, cs, cc, c1, cmu
         REAL, DIMENSION(dims) :: mean_step, z_mean, niche_center_copy
