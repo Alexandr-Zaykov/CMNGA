@@ -571,46 +571,37 @@ PROGRAM vanesa
     
     ! === MAIN EVOLUTIONARY LOOP ===
     DO gen = 1, max_gen
-        print*, "1"
         CALL evaluate_fitness(population, fitness, pop_size, num_vars, num_eval)
         
-        print*, "2"
         CALL update_niches_improved(population, fitness, niche_centers, niche_fitness, &
                                     num_niches, pop_size, num_vars, niche_radius_base)
         
-        print*, "3"
         IF (gen == 1) THEN
             CALL assign_niches_euclidean(population, niche_centers, niche_membership, &
                                         pop_size, num_niches, num_vars, niche_radius_adaptive)
         END IF
         
-        print*, "4"
         CALL update_niche_covariances(population, niche_membership, niche_centers, &
                                       niche_inv_cov, cov_valid, &
                                       pop_size, num_niches, num_vars)
         
-        print*, "5"
         CALL assign_niches_mahalanobis(population, niche_centers, niche_inv_cov, &
                                       cov_valid, niche_membership, pop_size, &
                                       num_niches, num_vars, chin_calc)
         
-        print*, "6"
         CALL update_adaptive_niche_radius(population, niche_membership, niche_centers, &
                                          niche_radius_adaptive, niche_radius_base, &
                                          pop_size, num_niches, num_vars)
         
-        print*, "7"
         CALL create_new_generation_cmaes(new_population, niche_membership, &
                                         niche_centers, pop_size, num_vars, num_niches, &
                                         cmaes_sigma, cmaes_cov, min_bound, max_bound)
         
-        print*, "8"
         CALL inject_diversity(new_population, niche_membership, pop_size, num_vars, &
                              min_bound, max_bound, diversity_rate)
         
         population = new_population
         
-        print*, "9"
         DO niche_id = 1, num_niches
             IF (is_niche_valid(niche_id, niche_centers, num_niches, num_vars)) THEN
                 CALL get_niche_members(niche_membership, niche_id, niche_members, &
@@ -631,7 +622,6 @@ PROGRAM vanesa
             END IF
         END DO
         
-        print*, "10"
         IF (MOD(gen, merge_interval) == 0) THEN
             CALL merge_overlapping_niches(niche_centers, niche_fitness, &
                                          niche_radius_adaptive, cmaes_sigma, &
@@ -641,12 +631,10 @@ PROGRAM vanesa
                                  cmaes_sigma, pop_size, num_niches, num_vars)
         END IF
         
-        print*, "11"
         IF (MOD(gen, print_interval) == 0) THEN
             CALL print_progress(gen, niche_centers, niche_fitness, niche_radius_adaptive, &
                                cmaes_sigma, num_eval, num_niches, num_vars)
         END IF
-        print*, "12"
     END DO
     
     ! === BFGS REFINEMENT PHASE ===
