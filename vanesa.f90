@@ -49,13 +49,43 @@ CONTAINS
         REAL :: f
         INTEGER :: i
         REAL, PARAMETER :: pi = 3.14159265359
+
         
         f = 10.0 * dims
         DO i = 1, dims
             f = f + x(i)**2 - 10.0 * COS(2.0 * pi * x(i))
         END DO
-        f = -f + 100.0
+        ! Final f =~ 40.35*num_vars
+        ! Maxima are at +-4.52 when using x e {–5..5}
+       ! If I want to switch it to minimization.
+       ! f = 400 - f
     END FUNCTION fitness_rastrigin
+
+    FUNCTION fitness_slow_rastrigin(x, dims) RESULT(f)
+        REAL, DIMENSION(dims), INTENT(IN) :: x
+        INTEGER, INTENT(IN) :: dims
+        REAL :: f, dummy_work
+        INTEGER :: i,j
+        REAL, PARAMETER :: pi = 3.14159265359
+
+        dummy_work = 0.0 
+        f = 10.0 * dims
+        DO i = 1, dims
+            DO j = 1, 100  ! ← Control parameter (adjust from 10 to 1000)
+                dummy_work = dummy_work + SIN(x(i) * j * 0.01) * COS(x(i) * j * 0.01)
+                dummy_work = dummy_work + EXP(-ABS(x(i)) * 0.001 * j)
+                dummy_work = dummy_work + SQRT(ABS(x(i) * j * 0.01) + 1.0)
+            END DO
+        END DO
+        DO i = 1, dims
+            f = f + x(i)**2 - 10.0 * COS(2.0 * pi * x(i))
+        END DO
+        f = f + dummy_work*1.0e-12
+        ! Final f =~ 40.35*num_vars
+        ! Maxima are at +-4.52 when using x e {–5..5}
+       ! If I want to switch it to minimization.
+       ! f = 400 - f
+    END FUNCTION fitness_slow_rastrigin
     
     FUNCTION fitness_sphere(x, dims) RESULT(f)
         REAL, DIMENSION(dims), INTENT(IN) :: x
@@ -318,6 +348,7 @@ CONTAINS
         REAL, DIMENSION(num_vars) :: x_temp
         INTEGER :: i, j
         
+        !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(i, j, x_temp, f_plus, f_minus) SCHEDULE(STATIC)
         DO i = 1, num_vars
             ! Explicit copy
             DO j = 1, num_vars
@@ -326,14 +357,16 @@ CONTAINS
             
             x_temp(i) = MIN(upper, x(i) + h)
             f_plus = evaluate_fitness_single(x_temp, num_vars, fitness_func_id)
-            num_eval = num_eval + 1
             
             x_temp(i) = MAX(lower, x(i) - h)
             f_minus = evaluate_fitness_single(x_temp, num_vars, fitness_func_id)
-            num_eval = num_eval + 1
             
             grad(i) = (f_plus - f_minus) / (2.0 * h)
         END DO
+        !$OMP END PARALLEL DO
+        
+        ! Update evaluation counter after parallel region
+        num_eval = num_eval + 2 * num_vars
         
     END SUBROUTINE compute_gradient_fd
     
@@ -402,6 +435,8 @@ CONTAINS
                 f = fitness_schwefel(x, num_vars)
             CASE(5)
                 f = fitness_equal_peaks(x, num_vars)
+            CASE(6)
+                f = fitness_slow_rastrigin(x,num_vars)
             CASE DEFAULT
                 f = fitness_five_peaks(x, num_vars)
         END SELECT
@@ -497,60 +532,119 @@ PROGRAM vanesa
     REAL, PARAMETER :: invalid_niche = -999.0
     REAL, PARAMETER :: invalid_check = -998.0
     
-    ! === CONFIGURABLE PARAMETERS (load from file in production) ===
-    INTEGER, PARAMETER :: pop_size = 500
-    INTEGER, PARAMETER :: max_gen = 30000  
-    INTEGER, PARAMETER :: num_vars = 2 
-    INTEGER, PARAMETER :: fitness_function = 1
-    REAL, PARAMETER :: min_bound = -40.0
-    REAL, PARAMETER :: max_bound = 40.0
+    ! === CONFIGURABLE PARAMETERS (can be loaded from input file) ===
+    ! Variables with default values (will be read from input file later)
+    INTEGER :: pop_size = 5000
+    INTEGER :: max_gen = 3000
+    INTEGER :: num_vars = 9
+    INTEGER :: num_niches = 20
+    REAL :: min_bound = 0.00
+    REAL :: max_bound = 5.00
+    REAL :: radius_factor = 0.10
+    REAL :: merge_radius_factor = 0.75
+    INTEGER :: merge_interval = 2
+    REAL :: consolidate_threshold = 0.2
+    REAL :: cmaes_c_mu = 0.5
+    REAL :: cmaes_damp = 2.0
+    REAL :: diversity_rate = 0.10
+    INTEGER :: print_interval = 5
+    LOGICAL :: print_warnings = .FALSE.
     
-    INTEGER, PARAMETER :: num_niches = 10
-    INTEGER, PARAMETER :: min_niche_size = 4
-    REAL, PARAMETER :: radius_factor = 0.10
-    REAL, PARAMETER :: merge_radius_factor = 0.75
-    INTEGER, PARAMETER :: merge_interval = 2
-    REAL, PARAMETER :: consolidate_threshold = 0.2
-    
-    REAL, PARAMETER :: cmaes_c_mu = 0.5
-    REAL, PARAMETER :: cmaes_damp = 2.0
-    
-    REAL, PARAMETER :: diversity_rate = 0.10
+    ! These remain as parameters
+    INTEGER, PARAMETER :: fitness_function = 6
     REAL, PARAMETER :: reg_param = 1e-6
-    INTEGER, PARAMETER :: print_interval = 5
+    
+    ! Calculated variables (derived from configurable parameters)
+    INTEGER :: min_niche_size  ! Calculated as 2 * num_vars for stable covariance estimation
     
     ! === STATE VARIABLES ===
-    REAL, DIMENSION(num_niches) :: cmaes_sigma
-    REAL, DIMENSION(num_niches, num_vars, num_vars) :: cmaes_cov
-    REAL, DIMENSION(num_niches, num_vars) :: cmaes_pc, cmaes_ps
-    REAL, DIMENSION(num_niches) :: cmaes_chin
-    LOGICAL, DIMENSION(num_niches) :: cmaes_initialized
+    REAL, DIMENSION(:), ALLOCATABLE :: cmaes_sigma
+    REAL, DIMENSION(:, :, :), ALLOCATABLE :: cmaes_cov
+    REAL, DIMENSION(:, :), ALLOCATABLE :: cmaes_pc, cmaes_ps
+    REAL, DIMENSION(:), ALLOCATABLE :: cmaes_chin
+    LOGICAL, DIMENSION(:), ALLOCATABLE :: cmaes_initialized
     
-    REAL, DIMENSION(pop_size, num_vars) :: population, new_population
-    REAL, DIMENSION(pop_size) :: fitness
-    INTEGER, DIMENSION(pop_size) :: niche_membership
+    REAL, DIMENSION(:, :), ALLOCATABLE :: population, new_population
+    REAL, DIMENSION(:), ALLOCATABLE :: fitness
+    INTEGER, DIMENSION(:), ALLOCATABLE :: niche_membership
     
     REAL :: chin_calc
-    REAL, DIMENSION(num_niches, num_vars) :: niche_centers
-    REAL, DIMENSION(num_niches) :: niche_fitness
-    REAL, DIMENSION(num_niches, num_vars, num_vars) :: niche_inv_cov
-    LOGICAL, DIMENSION(num_niches) :: cov_valid
-    REAL, DIMENSION(num_niches) :: niche_radius_adaptive
+    REAL, DIMENSION(:, :), ALLOCATABLE :: niche_centers
+    REAL, DIMENSION(:), ALLOCATABLE :: niche_fitness
+    REAL, DIMENSION(:, :, :), ALLOCATABLE :: niche_inv_cov
+    LOGICAL, DIMENSION(:), ALLOCATABLE :: cov_valid
+    REAL, DIMENSION(:), ALLOCATABLE :: niche_radius_adaptive
     REAL :: niche_radius_base
     
     INTEGER :: i,j
     INTEGER :: gen, num_eval, niche_id, member_count
-    INTEGER, DIMENSION(pop_size) :: niche_members
+    INTEGER, DIMENSION(:), ALLOCATABLE :: niche_members
     REAL :: time_start, time_end
     
     ! FIX 5: Proper sized work matrices
-    REAL, DIMENSION(num_vars, num_vars) :: work_mat
-    REAL, DIMENSION(num_vars) :: work_vec
+    REAL, DIMENSION(:, :), ALLOCATABLE :: work_mat
+    REAL, DIMENSION(:), ALLOCATABLE :: work_vec
     REAL :: trust_region
     
     ! === INITIALIZATION ===
     CALL CPU_TIME(time_start)
     CALL RANDOM_SEED()
+    
+    ! Calculate derived parameters
+    min_niche_size = 2 * num_vars  ! Safe minimum for stable covariance estimation
+    
+    ! Print configuration
+    PRINT *
+    PRINT *, "=========================================================="
+    PRINT *, "VANESA Configuration"
+    PRINT *, "=========================================================="
+    PRINT *, "Dimensions:"
+    PRINT *, "  Dimensions       = ", num_vars
+    PRINT *, "  Population size  = ", pop_size
+    PRINT *, "  Retained niches  = ", num_niches
+    PRINT *, "  Maximum gens     = ", max_gen
+    PRINT *
+    PRINT *, "Search space:"
+    PRINT *, "  Min. bound       = ", min_bound
+    PRINT *, "  Max. bound       = ", max_bound
+    PRINT *
+    PRINT *, "Algorithm parameters:"
+    PRINT *, "  Min. niche size  = ", min_niche_size, " (= 2 * num_vars)"
+    PRINT *, "  Initial radius   = ", radius_factor
+    PRINT *, "  Merge radius fac.= ", merge_radius_factor
+    PRINT *, "  Merge interval   = ", merge_interval
+    PRINT *, "  Diversity inject.= ", diversity_rate
+    PRINT *
+    PRINT *, "CMA-ES parameters:"
+    PRINT *, "  cmaes c_mu       = ", cmaes_c_mu
+    PRINT *, "  cmaes damping    = ", cmaes_damp
+    PRINT *
+    PRINT *, "Printing:"
+    PRINT *, "  Print warnings?  =", print_warnings
+    PRINT *, "  Print interval   =", print_interval
+    PRINT *
+    PRINT *, "=========================================================="
+    PRINT *
+    
+    ! Allocate arrays that depend on configurable dimensions
+    ALLOCATE(cmaes_sigma(num_niches))
+    ALLOCATE(cmaes_cov(num_niches, num_vars, num_vars))
+    ALLOCATE(cmaes_pc(num_niches, num_vars))
+    ALLOCATE(cmaes_ps(num_niches, num_vars))
+    ALLOCATE(cmaes_chin(num_niches))
+    ALLOCATE(cmaes_initialized(num_niches))
+    ALLOCATE(population(pop_size, num_vars))
+    ALLOCATE(new_population(pop_size, num_vars))
+    ALLOCATE(fitness(pop_size))
+    ALLOCATE(niche_membership(pop_size))
+    ALLOCATE(niche_centers(num_niches, num_vars))
+    ALLOCATE(niche_fitness(num_niches))
+    ALLOCATE(niche_inv_cov(num_niches, num_vars, num_vars))
+    ALLOCATE(cov_valid(num_niches))
+    ALLOCATE(niche_radius_adaptive(num_niches))
+    ALLOCATE(niche_members(pop_size))
+    ALLOCATE(work_mat(num_vars, num_vars))
+    ALLOCATE(work_vec(num_vars))
     
     niche_radius_base = radius_factor * (max_bound - min_bound)
     niche_radius_adaptive = niche_radius_base
@@ -627,9 +721,9 @@ PROGRAM vanesa
             CALL merge_overlapping_niches(niche_centers, niche_fitness, &
                                          niche_radius_adaptive, cmaes_sigma, &
                                          cmaes_cov, cmaes_pc, cmaes_ps, cmaes_initialized, &
-                                         num_niches, num_vars)
+                                         num_niches, num_vars,print_warnings)
             CALL fix_ghost_niches(niche_centers, niche_membership, niche_radius_adaptive, &
-                                 cmaes_sigma, pop_size, num_niches, num_vars)
+                                 cmaes_sigma, pop_size, num_niches, num_vars,print_warnings)
         END IF
         
         IF (MOD(gen, print_interval) == 0) THEN
@@ -689,7 +783,27 @@ PROGRAM vanesa
     
     CALL CPU_TIME(time_end)
     PRINT *, "Time taken: ", time_end - time_start, " seconds"
-    PRINT *, "Total evaluations: ", num_eval    
+    PRINT *, "Total evaluations: ", num_eval
+    
+    ! Deallocate dynamic arrays
+    DEALLOCATE(cmaes_sigma)
+    DEALLOCATE(cmaes_cov)
+    DEALLOCATE(cmaes_pc)
+    DEALLOCATE(cmaes_ps)
+    DEALLOCATE(cmaes_chin)
+    DEALLOCATE(cmaes_initialized)
+    DEALLOCATE(population)
+    DEALLOCATE(new_population)
+    DEALLOCATE(fitness)
+    DEALLOCATE(niche_membership)
+    DEALLOCATE(niche_centers)
+    DEALLOCATE(niche_fitness)
+    DEALLOCATE(niche_inv_cov)
+    DEALLOCATE(cov_valid)
+    DEALLOCATE(niche_radius_adaptive)
+    DEALLOCATE(niche_members)
+    DEALLOCATE(work_mat)
+    DEALLOCATE(work_vec)
     
 CONTAINS
 
@@ -1014,13 +1128,14 @@ CONTAINS
     END SUBROUTINE update_adaptive_niche_radius
     
     SUBROUTINE merge_overlapping_niches(centers, center_fits, radius_adaptive, &
-                                       sigma, c, pc, ps, initialized, num_nich, dims)
+                                       sigma, c, pc, ps, initialized, num_nich, dims, print_warn)
         REAL, DIMENSION(num_nich, dims), INTENT(INOUT) :: centers
         REAL, DIMENSION(num_nich), INTENT(INOUT) :: center_fits, sigma, radius_adaptive
         REAL, DIMENSION(num_nich, dims, dims), INTENT(INOUT) :: c
         REAL, DIMENSION(num_nich, dims), INTENT(INOUT) :: pc, ps
         LOGICAL, DIMENSION(num_nich), INTENT(INOUT) :: initialized
         INTEGER, INTENT(IN) :: num_nich, dims
+        LOGICAL, INTENT(IN) :: print_warn
         
         INTEGER :: i, j, k, merged_count, survivor_idx, merged_idx
         REAL :: euclidean_dist, avg_radius, merge_threshold, new_radius
@@ -1055,10 +1170,10 @@ CONTAINS
                     new_radius = MAX(radius_adaptive(survivor_idx), &
                                     euclidean_dist + radius_adaptive(merged_idx))
                     radius_adaptive(survivor_idx) = new_radius
-                   !I will put this behind an option later – it creates an unbearable amount of print-spam 
-                   !PRINT *, "Merged ", i, j, "with centers:", (centers(i,k), k=1,dims), &
-                   !        " and", (centers(j,k), k=1,dims)
-                    
+                    IF (print_warn) THEN
+                        PRINT *, "WARNING: Merged ", i, j, "with centers:", (centers(i,k), k=1,dims), &
+                                 " and", (centers(j,k), k=1,dims)
+                    ENDIF 
                     CALL invalidate_niche(merged_idx, centers, center_fits, sigma, c, pc, ps, &
                                         initialized, num_nich, dims)
                     
@@ -1068,19 +1183,20 @@ CONTAINS
             END DO
         END DO
         
-        IF (merged_count > 0) THEN
-            PRINT *, "Merged ", merged_count, " overlapping niches"
+        IF ((merged_count > 0).AND.print_warn) THEN
+            PRINT *, "WARNING: Merged ", merged_count, " overlapping niches"
         END IF
         
     END SUBROUTINE merge_overlapping_niches
     
     SUBROUTINE fix_ghost_niches(centers, membership, radius_adaptive, sigma, &
-                                size, num_nich, dims)
+                                size, num_nich, dims, print_warn)
         REAL, DIMENSION(num_nich, dims), INTENT(IN) :: centers
         INTEGER, DIMENSION(size), INTENT(IN) :: membership
         REAL, DIMENSION(num_nich), INTENT(IN) :: radius_adaptive
         REAL, DIMENSION(num_nich), INTENT(INOUT) :: sigma
         INTEGER, INTENT(IN) :: size, num_nich, dims
+        LOGICAL, INTENT(IN) :: print_warn
         
         INTEGER :: niche_id, member_count, i, k
         REAL :: new_sigma
@@ -1095,10 +1211,12 @@ CONTAINS
             
             IF (member_count == 0) THEN
                 new_sigma = MAX(0.5, radius_adaptive(niche_id) * 0.5)
-                PRINT *, "WARNING: Ghost niche ", niche_id, &
-                         " at ", (centers(niche_id,k), k=1,dims), &
-                         " has 0 members. Resetting sigma from ", sigma(niche_id), &
-                         " to ", new_sigma
+                IF (print_warn) THEN
+                    PRINT *, "WARNING: Ghost niche ", niche_id, &
+                             " at ", (centers(niche_id,k), k=1,dims), &
+                             " has 0 members. Resetting sigma from ", sigma(niche_id), &
+                             " to ", new_sigma
+                ENDIF
                 sigma(niche_id) = new_sigma
             END IF
         END DO
@@ -1446,15 +1564,24 @@ CONTAINS
         INTEGER, INTENT(IN) :: dims
         
         REAL, DIMENSION(dims) :: z, y
-        INTEGER :: i
+        REAL, DIMENSION(dims, dims) :: c_chol  ! Cholesky factor
+        INTEGER :: i, j, info
         REAL :: u1, u2, radius, z1, z2
         REAL, PARAMETER :: two_pi = 6.283185307179586
+        REAL, PARAMETER :: max_radius = 5.0  ! Clamp extreme values to prevent overflow
         
+        ! Generate standard normal random vector z ~ N(0, I)
         DO i = 1, dims, 2
             CALL RANDOM_NUMBER(u1)
             CALL RANDOM_NUMBER(u2)
             
-            radius = SQRT(-2.0 * LOG(u1 + 1e-10))
+            ! FIX: Protect against extreme values that can cause overflow
+            u1 = MAX(u1, 1e-8)  ! Ensure u1 is not too close to 0
+            
+            ! Box-Muller transform with clamping
+            radius = SQRT(-2.0 * LOG(u1))
+            radius = MIN(radius, max_radius)  ! Prevent extreme outliers
+            
             z1 = radius * COS(two_pi * u2)
             z2 = radius * SIN(two_pi * u2)
             
@@ -1464,8 +1591,46 @@ CONTAINS
             END IF
         END DO
         
-        ! FIX 14: c is already a contiguous copy from caller
-        CALL sgemv('N', dims, dims, 1.0, c, dims, z, 1, 0.0, y, 1)
+        ! Copy covariance matrix for Cholesky decomposition
+        DO j = 1, dims
+            DO i = 1, dims
+                c_chol(i, j) = c(i, j)
+            END DO
+        END DO
+        
+        ! FIX: Perform Cholesky decomposition c = L * L^T
+        ! This is the mathematically correct way to sample from multivariate normal
+        ! We need to use L (the Cholesky factor), not C (the full covariance)
+        CALL spotrf('L', dims, c_chol, dims, info)
+        
+        IF (info /= 0) THEN
+            ! Cholesky failed - matrix not positive definite
+            ! Fall back to identity matrix (isotropic sampling)
+            PRINT *, "WARNING: Cholesky decomposition failed (info=", info, &
+                     "), using isotropic sampling"
+            DO i = 1, dims
+                DO j = 1, dims
+                    IF (i == j) THEN
+                        c_chol(i, j) = 1.0
+                    ELSE
+                        c_chol(i, j) = 0.0
+                    END IF
+                END DO
+            END DO
+        ELSE
+            ! Zero out upper triangle (spotrf only fills lower triangle)
+            DO i = 1, dims
+                DO j = i+1, dims
+                    c_chol(i, j) = 0.0
+                END DO
+            END DO
+        END IF
+        
+        ! Compute y = L * z (using Cholesky factor L, not full covariance C)
+        ! This is correct: x = mean + sigma * L * z where C = L * L^T
+        CALL sgemv('N', dims, dims, 1.0, c_chol, dims, z, 1, 0.0, y, 1)
+        
+        ! Final sample
         DO i = 1, dims
             sample(i) = mean(i) + sigma * y(i)
         END DO
@@ -1557,8 +1722,8 @@ CONTAINS
         INTEGER :: i, j
         REAL, DIMENSION(dims) :: temp_point
         
+        !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(i, j, temp_point) SCHEDULE(DYNAMIC)
         DO i = 1, size
-            evalfs = evalfs + 1
             
             DO j = 1, dims
                 temp_point(j) = pop(i, j)
@@ -1575,10 +1740,16 @@ CONTAINS
                     fit(i) = fitness_schwefel(temp_point, dims)
                 CASE(5)
                     fit(i) = fitness_equal_peaks(temp_point, dims)
+                CASE(6)
+                    fit(i) = fitness_slow_rastrigin(temp_point, dims)
                 CASE DEFAULT
                     fit(i) = fitness_five_peaks(temp_point, dims)
             END SELECT
         END DO
+        !$OMP END PARALLEL DO
+        
+        ! Update evaluation counter after parallel region
+        evalfs = evalfs + size
     END SUBROUTINE evaluate_fitness
     
     SUBROUTINE sort_by_fitness(fitness, indices, size)
