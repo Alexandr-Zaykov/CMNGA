@@ -16,8 +16,7 @@ I switched from GA to ES as it provided better results for out testing function 
 5) License text file.
 
 TO DO:
-1) I still have to go over the populations and assignments. The code correctly converges to 4 highest peaks at sufficient samplings (~15 000 function evalfs), at low samplings it either finds the one broadest, or two highest. The 5th peak is drowned in the 'noise'.
-2) MPI implementation—split populations.
+1) Merge with the intended code.
 
 PREREQUISITES:
 1) BLAS/LAPACK = we use single-precision; see module blas_external
